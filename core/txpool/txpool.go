@@ -146,6 +146,12 @@ var (
 	slotsGauge   = metrics.NewRegisteredGauge("txpool/slots", nil)
 
 	reheapTimer = metrics.NewRegisteredTimer("txpool/reheap", nil)
+
+	acclockTimer  = metrics.NewRegisteredTimer("txpool/acclocktime", nil)
+	resetTimer    = metrics.NewRegisteredTimer("txpool/resettime", nil)
+	promoteTimer  = metrics.NewRegisteredTimer("txpool/promotetime", nil)
+	truncateTimer = metrics.NewRegisteredTimer("txpool/truncatetime", nil)
+	txfeedTimer   = metrics.NewRegisteredTimer("txpool/txfeedtime", nil)
 )
 
 // TxStatus is the current status of a transaction as seen by the pool.
@@ -1284,6 +1290,8 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 	}(time.Now())
 	defer close(done)
 
+	tstart := time.Now()
+
 	var promoteAddrs []common.Address
 	if dirtyAccounts != nil && reset == nil {
 		// Only dirty accounts need to be promoted, unless we're resetting.
@@ -1292,9 +1300,12 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 	pool.mu.Lock()
+	acclockTimer.Update(time.Since(tstart))
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
+		tstart = time.Now()
 		pool.reset(reset.oldHead, reset.newHead)
+		resetTimer.Update(time.Since(tstart))
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -1309,6 +1320,7 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 			promoteAddrs = append(promoteAddrs, addr)
 		}
 	}
+	tstart = time.Now()
 	// Check for pending transactions for every account that sent new ones
 	promoted := pool.promoteExecutables(promoteAddrs)
 
@@ -1329,9 +1341,12 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		}
 		pool.pendingNonces.setAll(nonces)
 	}
+	promoteTimer.Update(time.Since(tstart))
+	tstart = time.Now()
 	// Ensure pool.queue and pool.pending sizes stay within the configured limits.
 	pool.truncatePending()
 	pool.truncateQueue()
+	truncateTimer.Update(time.Since(tstart))
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
@@ -1350,7 +1365,9 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		for _, set := range events {
 			txs = append(txs, set.Flatten()...)
 		}
+		tstart = time.Now()
 		pool.txFeed.Send(core.NewTxsEvent{Txs: txs})
+		txfeedTimer.Update(time.Since(tstart))
 	}
 }
 
