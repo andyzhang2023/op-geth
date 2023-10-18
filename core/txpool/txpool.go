@@ -27,6 +27,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/prque"
+	"github.com/ethereum/go-ethereum/common/ringlist"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -375,6 +376,8 @@ func (pool *TxPool) loop() {
 		journal    = time.NewTicker(pool.config.Rejournal)
 		// Track the previous head headers for transaction reorgs
 		head = pool.chain.CurrentBlock()
+		// waiting queue for reannouncing transactions
+		reannoQueue = ringlist.NewRingList[common.Address]()
 	)
 	defer report.Stop()
 	defer evict.Stop()
@@ -431,8 +434,18 @@ func (pool *TxPool) loop() {
 		case <-reannounce.C:
 			pool.mu.RLock()
 			reannoTxs := func() []*types.Transaction {
+				for addr := range pool.pending {
+					reannoQueue.Add(addr)
+				}
 				txs := make([]*types.Transaction, 0)
-				for addr, list := range pool.pending {
+				for i := 0; i < reannoQueue.Len(); i++ {
+					addr := reannoQueue.Next(common.Address{})
+					list := pool.pending[addr]
+					if list == nil || list.Len() == 0 {
+						reannoQueue.MarkRemoved(addr)
+						continue
+					}
+
 					if !pool.locals.contains(addr) {
 						continue
 					}
@@ -451,6 +464,7 @@ func (pool *TxPool) loop() {
 				return txs
 			}()
 			pool.mu.RUnlock()
+			reannoQueue.Purge()
 			if len(reannoTxs) > 0 {
 				pool.reannoTxFeed.Send(core.ReannoTxsEvent{reannoTxs})
 			}
