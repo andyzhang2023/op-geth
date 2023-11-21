@@ -255,6 +255,11 @@ func (config *Config) sanitize() Config {
 	return conf
 }
 
+type accInfo struct {
+	Nonce   uint64
+	Balance *big.Int
+}
+
 // TxPool contains all currently known transactions. Transactions
 // enter the pool when they are received from the network or submitted
 // locally. They exit the pool when they are included in the blockchain.
@@ -281,6 +286,8 @@ type TxPool struct {
 	currentState  *state.StateDB // Current state in the blockchain head
 	pendingNonces *noncer        // Pending state tracking virtual nonces
 	currentMaxGas uint64         // Current gas limit for transaction caps
+
+	stateCache map[common.Address]*accInfo // Cache of account info(balance, nonce) at current state
 
 	l1CostFn func(dataGas types.RollupGasData, isDepositTx bool) *big.Int // Current L1 fee cost function
 
@@ -334,6 +341,7 @@ func NewTxPool(config Config, chainconfig *params.ChainConfig, chain blockChain)
 		reorgShutdownCh: make(chan struct{}),
 		initDoneCh:      make(chan struct{}),
 		gasPrice:        new(big.Int).SetUint64(config.PriceLimit),
+		stateCache:      make(map[common.Address]*accInfo),
 	}
 	pool.locals = newAccountSet(pool.signer)
 	for _, addr := range config.Locals {
@@ -720,7 +728,7 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 		return ErrUnderpriced
 	}
 	// Ensure the transaction adheres to nonce ordering
-	if pool.currentState.GetNonce(from) > tx.Nonce() {
+	if pool.getNonce(from) > tx.Nonce() {
 		return core.ErrNonceTooLow
 	}
 	// Transactor should have enough funds to cover the costs
@@ -729,7 +737,7 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 	if l1Cost := pool.l1CostFn(tx.RollupDataGas(), tx.IsDepositTx()); l1Cost != nil { // add rollup cost
 		cost = cost.Add(cost, l1Cost)
 	}
-	balance := pool.currentState.GetBalance(from)
+	balance := pool.getBalance(from)
 	if balance.Cmp(cost) < 0 {
 		return core.ErrInsufficientFunds
 	}
@@ -747,7 +755,7 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 			sum.Sub(sum, replL1Cost)
 		}
 		if balance.Cmp(sum) < 0 {
-			log.Trace("Replacing transactions would overdraft", "sender", from, "balance", pool.currentState.GetBalance(from), "required", sum)
+			log.Trace("Replacing transactions would overdraft", "sender", from, "balance", pool.getBalance(from), "required", sum)
 			return ErrOverdraft
 		}
 	}
@@ -1031,6 +1039,34 @@ func (pool *TxPool) AddRemotesSync(txs []*types.Transaction) []error {
 func (pool *TxPool) addRemoteSync(tx *types.Transaction) error {
 	errs := pool.AddRemotesSync([]*types.Transaction{tx})
 	return errs[0]
+}
+
+// getBalance() read balance at current state
+func (pool *TxPool) getBalance(addr common.Address) *big.Int {
+	if acc := pool.stateCache[addr]; acc != nil {
+		return acc.Balance
+	}
+	balance := pool.currentState.GetBalance(addr)
+	nonce := pool.currentState.GetNonce(addr)
+	pool.stateCache[addr] = &accInfo{
+		Balance: balance,
+		Nonce:   nonce,
+	}
+	return balance
+}
+
+// getNonce() read nonce at current state
+func (pool *TxPool) getNonce(addr common.Address) uint64 {
+	if acc := pool.stateCache[addr]; acc != nil {
+		return acc.Nonce
+	}
+	balance := pool.currentState.GetBalance(addr)
+	nonce := pool.currentState.GetNonce(addr)
+	pool.stateCache[addr] = &accInfo{
+		Balance: balance,
+		Nonce:   nonce,
+	}
+	return nonce
 }
 
 // AddRemote enqueues a single transaction into the pool if it is valid. This is a convenience
@@ -1459,6 +1495,7 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 		log.Error("Failed to reset txpool state", "err", err)
 		return
 	}
+	pool.stateCache = make(map[common.Address]*accInfo)
 	pool.currentState = statedb
 	pool.pendingNonces = newNoncer(statedb)
 	pool.currentMaxGas = newHead.GasLimit
@@ -1498,13 +1535,13 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) []*types.Trans
 			continue // Just in case someone calls with a non existing account
 		}
 		// Drop all transactions that are deemed too old (low nonce)
-		forwards := list.Forward(pool.currentState.GetNonce(addr))
+		forwards := list.Forward(pool.getNonce(addr))
 		for _, tx := range forwards {
 			hash := tx.Hash()
 			pool.all.Remove(hash)
 		}
 		log.Trace("Removed old queued transactions", "count", len(forwards))
-		balance := pool.currentState.GetBalance(addr)
+		balance := pool.getBalance(addr)
 		if !list.Empty() {
 			// Reduce the cost-cap by L1 rollup cost of the first tx if necessary. Other txs will get filtered out afterwards.
 			el := list.txs.FirstElement()
@@ -1700,7 +1737,7 @@ func (pool *TxPool) truncateQueue() {
 func (pool *TxPool) demoteUnexecutables() {
 	// Iterate over all accounts and demote any non-executable transactions
 	for addr, list := range pool.pending {
-		nonce := pool.currentState.GetNonce(addr)
+		nonce := pool.getNonce(addr)
 
 		// Drop all transactions that are deemed too old (low nonce)
 		olds := list.Forward(nonce)
@@ -1709,7 +1746,7 @@ func (pool *TxPool) demoteUnexecutables() {
 			pool.all.Remove(hash)
 			log.Trace("Removed old pending transaction", "hash", hash)
 		}
-		balance := pool.currentState.GetBalance(addr)
+		balance := pool.getBalance(addr)
 		if !list.Empty() {
 			// Reduce the cost-cap by L1 rollup cost of the first tx if necessary. Other txs will get filtered out afterwards.
 			el := list.txs.FirstElement()
