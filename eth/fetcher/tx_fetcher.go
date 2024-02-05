@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
@@ -305,6 +306,8 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 			duplicate   int64
 			underpriced int64
 			otherreject int64
+
+			rejectwithoutnoncetoolow int64
 		)
 		batch := txs[i:end]
 		for j, err := range f.addTxs(batch) {
@@ -326,6 +329,9 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 
 			default:
 				otherreject++
+				if !errors.Is(err, core.ErrNonceTooLow) {
+					rejectwithoutnoncetoolow++
+				}
 				log.Warn("Peer's transaction rejected", "peer", peer, "txHash", batch[j].Hash().String(), "err", err.Error())
 			}
 			added = append(added, batch[j].Hash())
@@ -335,7 +341,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 		otherRejectMeter.Mark(otherreject)
 
 		// If 'other reject' is >25% of the deliveries in any batch, sleep a bit.
-		if otherreject > 128/4 {
+		if rejectwithoutnoncetoolow > 128/4 {
 			time.Sleep(200 * time.Millisecond)
 			log.Warn("Peer delivering stale transactions", "peer", peer, "rejected", otherreject)
 		}
