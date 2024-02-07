@@ -18,10 +18,11 @@ package eth
 
 import (
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/metrics"
 )
 
 const (
@@ -29,6 +30,19 @@ const (
 	// pack can get larger than this if a single transactions exceeds this size.
 	maxTxPacketSize = 100 * 1024
 )
+
+var (
+	txAnnounceAbandonMeter  = metrics.NewRegisteredMeter("eth/fetcher/transaction/announces/abandon", nil)
+	txBroadcastAbandonMeter = metrics.NewRegisteredMeter("eth/fetcher/transaction/broadcasts/abandon", nil)
+)
+
+// safeGetPeerIP
+var safeGetPeerIP = func(p *Peer) string {
+	if p.Node() != nil && p.Node().IP() != nil {
+		return p.Node().IP().String()
+	}
+	return "UNKNOWN"
+}
 
 // blockPropagation is a block propagation event, waiting for its turn in the
 // broadcast queue.
@@ -92,14 +106,15 @@ func (p *Peer) broadcastTransactions() {
 			// If there's anything available to transfer, fire up an async writer
 			if len(txs) > 0 {
 				done = make(chan struct{})
-				gopool.Submit(func() {
+				go func() {
 					if err := p.SendTransactions(txs); err != nil {
+						p.Log().Warn("Broadcast transactions failed", "peerId", p.ID(), "peerIP", safeGetPeerIP(p), "lost", len(txs), "hashes", concat(collectHashes(txs)), "err", err.Error())
 						fail <- err
 						return
 					}
 					close(done)
-					p.Log().Trace("Sent transactions", "count", len(txs))
-				})
+					p.Log().Trace("Sent transaction bodies", "count", len(txs), "peer.id", p.Node().ID().String(), "peer.ip", p.Node().IP().String(), "hashes", concat(collectHashes(txs)))
+				}()
 			}
 		}
 		// Transfer goroutine may or may not have been started, listen for events
@@ -112,6 +127,8 @@ func (p *Peer) broadcastTransactions() {
 			// New batch of transactions to be broadcast, queue them (with cap)
 			queue = append(queue, hashes...)
 			if len(queue) > maxQueuedTxs {
+				p.Log().Warn("Broadcast hashes abandon", "peerId", p.ID(), "peerIP", safeGetPeerIP(p), "abandon", len(queue)-maxQueuedTxs, "hashes", concat(queue[:len(queue)-maxQueuedTxs]))
+				txBroadcastAbandonMeter.Mark(int64(len(queue) - maxQueuedTxs))
 				// Fancy copy and resize to ensure buffer doesn't grow indefinitely
 				queue = queue[:copy(queue, queue[len(queue)-maxQueuedTxs:])]
 			}
@@ -163,21 +180,23 @@ func (p *Peer) announceTransactions() {
 			// If there's anything available to transfer, fire up an async writer
 			if len(pending) > 0 {
 				done = make(chan struct{})
-				gopool.Submit(func() {
+				go func() {
 					if p.version >= ETH68 {
 						if err := p.sendPooledTransactionHashes68(pending, pendingTypes, pendingSizes); err != nil {
+							p.Log().Warn("Announce hashes68 failed", "peerId", p.ID(), "peerIP", safeGetPeerIP(p), "lost", len(pending), "hashes", concat(pending), "err", err.Error())
 							fail <- err
 							return
 						}
 					} else {
 						if err := p.sendPooledTransactionHashes66(pending); err != nil {
+							p.Log().Warn("Announce hashes66 failed", "peerId", p.ID(), "peerIP", safeGetPeerIP(p), "lost", len(pending), "hashes", concat(pending), "err", err.Error())
 							fail <- err
 							return
 						}
 					}
 					close(done)
-					p.Log().Trace("Sent transaction announcements", "count", len(pending))
-				})
+					p.Log().Trace("Sent transaction announcements", "count", len(pending), "peer.Id", p.ID(), "peer.IP", p.Node().IP().String(), "hashes", concat(pending))
+				}()
 			}
 		}
 		// Transfer goroutine may or may not have been started, listen for events
@@ -190,6 +209,8 @@ func (p *Peer) announceTransactions() {
 			// New batch of transactions to be broadcast, queue them (with cap)
 			queue = append(queue, hashes...)
 			if len(queue) > maxQueuedTxAnns {
+				p.Log().Warn("Announce hashes abandon", "peerId", p.ID(), "peerIP", safeGetPeerIP(p), "abandon", len(queue)-maxQueuedTxAnns, "hashes", concat(queue[:len(queue)-maxQueuedTxAnns]))
+				txAnnounceAbandonMeter.Mark(int64(len(queue) - maxQueuedTxAnns))
 				// Fancy copy and resize to ensure buffer doesn't grow indefinitely
 				queue = queue[:copy(queue, queue[len(queue)-maxQueuedTxAnns:])]
 			}
@@ -204,4 +225,20 @@ func (p *Peer) announceTransactions() {
 			return
 		}
 	}
+}
+
+func collectHashes(txs []*types.Transaction) []common.Hash {
+	hashes := make([]common.Hash, len(txs))
+	for i, tx := range txs {
+		hashes[i] = tx.Hash()
+	}
+	return hashes
+}
+
+func concat(hashes []common.Hash) string {
+	strslice := make([]string, len(hashes))
+	for i, hash := range hashes {
+		strslice[i] = hash.String()
+	}
+	return strings.Join(strslice, ",")
 }
