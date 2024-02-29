@@ -467,7 +467,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 			NoBuild:    bc.cacheConfig.SnapshotNoBuild,
 			AsyncBuild: !bc.cacheConfig.SnapshotWait,
 		}
-		bc.snaps, _ = snapshot.New(snapconfig, bc.db, bc.triedb, head.Root)
+		bc.snaps, _ = snapshot.New(snapconfig, bc.db, bc.triedb, head.Root, snapshot.SetCapLimit(int(bc.cacheConfig.TriesInMemory)))
 	}
 
 	// Start future block processor.
