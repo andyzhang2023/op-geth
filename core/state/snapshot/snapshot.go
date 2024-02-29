@@ -172,8 +172,20 @@ type Tree struct {
 	layers map[common.Hash]snapshot // Collection of all known layers
 	lock   sync.RWMutex
 
+	capLimit int // Maximum number of layers permitted to keep in memory
+
 	// Test hooks
 	onFlatten func() // Hook invoked when the bottom most diff layers are flattened
+}
+
+// SnapshotOption is a function that can be passed to New to configure the snapshot.
+type SnapshotOption func(*Tree)
+
+// SetCapLimit sets the maximum number of layers permitted to keep in memory.
+func SetCapLimit(capLimit int) SnapshotOption {
+	return func(tree *Tree) {
+		tree.capLimit = capLimit
+	}
 }
 
 // New attempts to load an already existing snapshot from a persistent key-value
@@ -192,13 +204,20 @@ type Tree struct {
 //     state trie.
 //   - otherwise, the entire snapshot is considered invalid and will be recreated on
 //     a background thread.
-func New(config Config, diskdb ethdb.KeyValueStore, triedb *trie.Database, root common.Hash) (*Tree, error) {
+func New(config Config, diskdb ethdb.KeyValueStore, triedb *trie.Database, root common.Hash, opts ...SnapshotOption) (*Tree, error) {
 	// Create a new, empty snapshot tree
 	snap := &Tree{
-		config: config,
-		diskdb: diskdb,
-		triedb: triedb,
-		layers: make(map[common.Hash]snapshot),
+		config:   config,
+		diskdb:   diskdb,
+		triedb:   triedb,
+		layers:   make(map[common.Hash]snapshot),
+		capLimit: 128,
+	}
+	// apply options
+	for _, opt := range opts {
+		if opt != nil {
+			opt(snap)
+		}
 	}
 	// Attempt to load a previously persisted snapshot and rebuild one if failed
 	head, disabled, err := loadSnapshot(diskdb, triedb, root, config.CacheSize, config.Recovery, config.NoBuild)
@@ -869,4 +888,9 @@ func (t *Tree) Size() (diffs common.StorageSize, buf common.StorageSize) {
 		}
 	}
 	return size, 0
+}
+
+// CapLimit returns the cap limit of the snapshot.
+func (t *Tree) CapLimit() int {
+	return t.capLimit
 }
