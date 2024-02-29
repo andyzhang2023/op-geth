@@ -252,6 +252,11 @@ var (
 		Value:    true,
 		Category: flags.EthCategory,
 	}
+	TriesInMemoryFlag = &cli.Uint64Flag{
+		Name:  "triesInMemory",
+		Usage: "The layer of tries trees that keep in memory",
+		Value: 128,
+	}
 	LightKDFFlag = &cli.BoolFlag{
 		Name:     "lightkdf",
 		Usage:    "Reduce key-derivation RAM & CPU usage at some expense of KDF strength",
@@ -1869,6 +1874,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	if ctx.IsSet(CacheFlag.Name) || ctx.IsSet(CacheGCFlag.Name) {
 		cfg.TrieDirtyCache = ctx.Int(CacheFlag.Name) * ctx.Int(CacheGCFlag.Name) / 100
 	}
+	if ctx.IsSet(TriesInMemoryFlag.Name) {
+		cfg.TriesInMemory = ctx.Uint64(TriesInMemoryFlag.Name)
+	}
 	if ctx.IsSet(CacheFlag.Name) || ctx.IsSet(CacheSnapshotFlag.Name) {
 		cfg.SnapshotCache = ctx.Int(CacheFlag.Name) * ctx.Int(CacheSnapshotFlag.Name) / 100
 	}
@@ -2355,6 +2363,7 @@ func MakeChain(ctx *cli.Context, stack *node.Node, readonly bool) (*core.BlockCh
 		TrieDirtyLimit:      ethconfig.Defaults.TrieDirtyCache,
 		TrieDirtyDisabled:   ctx.String(GCModeFlag.Name) == "archive",
 		TrieTimeLimit:       ethconfig.Defaults.TrieTimeout,
+		TriesInMemory:       core.TriesInMemory,
 		SnapshotLimit:       ethconfig.Defaults.SnapshotCache,
 		Preimages:           ctx.Bool(CachePreimagesFlag.Name),
 		StateScheme:         scheme,
@@ -2363,6 +2372,9 @@ func MakeChain(ctx *cli.Context, stack *node.Node, readonly bool) (*core.BlockCh
 	if cache.TrieDirtyDisabled && !cache.Preimages {
 		cache.Preimages = true
 		log.Info("Enabling recording of key preimages since archive mode is used")
+	}
+	if ctx.IsSet(TriesInMemoryFlag.Name) {
+		cache.TriesInMemory = ctx.Uint64(TriesInMemoryFlag.Name)
 	}
 	if !ctx.Bool(SnapshotFlag.Name) {
 		cache.SnapshotLimit = 0 // Disabled

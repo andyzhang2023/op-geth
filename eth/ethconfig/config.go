@@ -134,6 +134,7 @@ type Config struct {
 	TrieDirtyCache     int
 	TrieTimeout        time.Duration
 	TrieCommitInterval uint64 // Define a block height interval, commit trie every TrieCommitInterval block height.
+	TriesInMemory      uint64 // max number of trie roots in memory
 	SnapshotCache      int
 	Preimages          bool
 
