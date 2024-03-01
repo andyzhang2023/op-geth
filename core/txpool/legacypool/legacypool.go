@@ -1340,7 +1340,7 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
 	// for metrics and logs record
 	var debugBlockNumber uint64 = 0
-	if reset.newHead != nil {
+	if reset != nil && reset.newHead != nil {
 		debugBlockNumber = reset.newHead.Number.Uint64()
 	}
 
