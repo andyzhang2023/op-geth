@@ -1346,10 +1346,11 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		// the flatten operation can be avoided.
 		promoteAddrs = dirtyAccounts.flatten()
 	}
+	var demoteAddrs map[common.Address]struct{}
 	pool.mu.Lock()
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
-		pool.reset(reset.oldHead, reset.newHead)
+		demoteAddrs = pool.reset(reset.oldHead, reset.newHead)
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -1371,7 +1372,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
-		pool.demoteUnexecutables()
+		pool.demoteUnexecutables(demoteAddrs)
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
 				pendingBaseFee := eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
@@ -1415,11 +1416,15 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 
 // reset retrieves the current state of the blockchain and ensures the content
 // of the transaction pool is valid with regard to the chain state.
-func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
+func (pool *LegacyPool) reset(oldHead, newHead *types.Header) (demoteAddrs map[common.Address]struct{}) {
 	// If we're reorging an old state, reinject all dropped transactions
 	var reinject types.Transactions
+	var reorg bool
 
 	if oldHead != nil && oldHead.Hash() != newHead.ParentHash {
+		// reorg occurs
+		reorg = true
+
 		// If the reorg is too deep, avoid doing it (will happen during fast sync)
 		oldNum := oldHead.Number.Uint64()
 		newNum := newHead.Number.Uint64()
@@ -1493,6 +1498,16 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
 			}
 		}
 	}
+	if !reorg && newHead != nil {
+		// collect dirty addresses for transaction demotion
+		newBlock := pool.chain.GetBlock(newHead.Hash(), newHead.Number.Uint64())
+		demoteAddrs = make(map[common.Address]struct{})
+		for _, tx := range newBlock.Transactions() {
+			if addr, err := types.Sender(pool.signer, tx); err == nil {
+				demoteAddrs[addr] = struct{}{}
+			}
+		}
+	}
 	// Initialize the internal state to the current head
 	if newHead == nil {
 		newHead = pool.chain.CurrentBlock() // Special case during testing
@@ -1515,6 +1530,7 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
 	log.Debug("Reinjecting stale transactions", "count", len(reinject))
 	core.SenderCacher.Recover(pool.signer, reinject)
 	pool.addTxsLocked(reinject, false)
+	return
 }
 
 // promoteExecutables moves transactions that have become processable from the
@@ -1735,10 +1751,17 @@ func (pool *LegacyPool) truncateQueue() {
 // Note: transactions are not marked as removed in the priced list because re-heaping
 // is always explicitly triggered by SetBaseFee and it would be unnecessary and wasteful
 // to trigger a re-heap is this function
-func (pool *LegacyPool) demoteUnexecutables() {
+func (pool *LegacyPool) demoteUnexecutables(demoteAddrs map[common.Address]struct{}) {
 	// Iterate over all accounts and demote any non-executable transactions
 	gasLimit := txpool.EffectiveGasLimit(pool.chainconfig, pool.currentHead.Load().GasLimit)
-	for addr, list := range pool.pending {
+	if demoteAddrs == nil {
+		demoteAddrs = make(map[common.Address]struct{})
+		for addr := range pool.pending {
+			demoteAddrs[addr] = struct{}{}
+		}
+	}
+	for addr := range demoteAddrs {
+		list := pool.pending[addr]
 		nonce := pool.currentState.GetNonce(addr)
 
 		// Drop all transactions that are deemed too old (low nonce)
