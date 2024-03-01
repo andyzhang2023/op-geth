@@ -98,6 +98,10 @@ var (
 	throttleTxMeter = metrics.NewRegisteredMeter("txpool/throttle", nil)
 	// reorgDurationTimer measures how long time a txpool reorg takes.
 	reorgDurationTimer = metrics.NewRegisteredTimer("txpool/reorgtime", nil)
+	// demoteDurationTimer mesures how long time a demoteExecutables takes.
+	demoteDurationTimer = metrics.NewRegisteredTimer("txpool/demotetime", nil)
+	// setBaseFeeTimer mesures how long time a setBaseFee procedure takes.
+	setBaseFeeTimer = metrics.NewRegisteredTimer("txpool/setbasefeetime", nil)
 	// dropBetweenReorgHistogram counts how many drops we experience between two reorg runs. It is expected
 	// that this number is pretty low, since txpool reorgs happen very frequently.
 	dropBetweenReorgHistogram = metrics.NewRegisteredHistogram("txpool/dropbetweenreorg", nil, metrics.NewExpDecaySample(1028, 0.015))
@@ -1371,13 +1375,31 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
+		var debugBlockNumber uint64 = 0
+		if reset.newHead != nil {
+			debugBlockNumber = reset.newHead.Number.Uint64()
+		}
+		debugTime := time.Now()
+		var debugDuration time.Duration
 		pool.demoteUnexecutables()
+		debugDuration = time.Since(debugTime)
+		log.Info("demoteUnexecutables latency", "latency", debugDuration, "blockNumber", debugBlockNumber)
+		demoteDurationTimer.Update(debugDuration)
+
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
 				pendingBaseFee := eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
+				debugTime = time.Now()
 				pool.priced.SetBaseFee(pendingBaseFee)
+				debugDuration = time.Since(debugTime)
+				log.Info("SetBaseFee latency", "latency", common.PrettyDuration(debugDuration), "blockNumber", debugBlockNumber)
+				setBaseFeeTimer.Update(debugDuration)
 			} else {
+				debugTime = time.Now()
 				pool.priced.Reheap()
+				debugDuration = time.Since(debugTime)
+				log.Info("Reheap latency", "latency", common.PrettyDuration(debugDuration), "blockNumber", debugBlockNumber)
+				setBaseFeeTimer.Update(debugDuration)
 			}
 		}
 		// Update all accounts to the latest known pending nonce
