@@ -1385,26 +1385,22 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
 		debugTime := time.Now()
-		var debugDuration time.Duration
 		pool.demoteUnexecutables()
-		debugDuration = time.Since(debugTime)
-		log.Info("demoteUnexecutables latency", "latency", debugDuration, "blockNumber", debugBlockNumber)
-		demoteDurationTimer.Update(debugDuration)
+		log.Info("demoteUnexecutables latency", "latency", common.PrettyDuration(time.Since(debugTime)), "blockNumber", debugBlockNumber)
+		demoteDurationTimer.Update(time.Since(debugTime))
 
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
 				pendingBaseFee := eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
 				debugTime = time.Now()
 				pool.priced.SetBaseFee(pendingBaseFee)
-				debugDuration = time.Since(debugTime)
-				log.Info("SetBaseFee latency", "latency", common.PrettyDuration(debugDuration), "blockNumber", debugBlockNumber)
-				setBaseFeeTimer.Update(debugDuration)
+				log.Info("SetBaseFee latency", "latency", common.PrettyDuration(time.Since(debugTime)), "blockNumber", debugBlockNumber)
+				setBaseFeeTimer.Update(time.Since(debugTime))
 			} else {
 				debugTime = time.Now()
 				pool.priced.Reheap()
-				debugDuration = time.Since(debugTime)
-				log.Info("Reheap latency", "latency", common.PrettyDuration(debugDuration), "blockNumber", debugBlockNumber)
-				setBaseFeeTimer.Update(debugDuration)
+				log.Info("Reheap latency", "latency", common.PrettyDuration(time.Since(debugTime)), "blockNumber", debugBlockNumber)
+				setBaseFeeTimer.Update(time.Since(debugTime))
 			}
 		}
 		// Update all accounts to the latest known pending nonce
