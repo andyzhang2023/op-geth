@@ -1762,6 +1762,9 @@ func (pool *LegacyPool) demoteUnexecutables(demoteAddrs map[common.Address]struc
 	}
 	for addr := range demoteAddrs {
 		list := pool.pending[addr]
+		if list == nil {
+			continue
+		}
 		nonce := pool.currentState.GetNonce(addr)
 
 		// Drop all transactions that are deemed too old (low nonce)
