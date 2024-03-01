@@ -1338,8 +1338,17 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 
 // runReorg runs reset and promoteExecutables on behalf of scheduleReorgLoop.
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
+	// for metrics and logs record
+	var debugBlockNumber uint64 = 0
+	if reset.newHead != nil {
+		debugBlockNumber = reset.newHead.Number.Uint64()
+	}
+
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
+		if reset != nil {
+			log.Info("runReorg latency", "latency", time.Since(t0), "blockNumber", debugBlockNumber)
+		}
 	}(time.Now())
 	defer close(done)
 
@@ -1375,10 +1384,6 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
-		var debugBlockNumber uint64 = 0
-		if reset.newHead != nil {
-			debugBlockNumber = reset.newHead.Number.Uint64()
-		}
 		debugTime := time.Now()
 		var debugDuration time.Duration
 		pool.demoteUnexecutables()
