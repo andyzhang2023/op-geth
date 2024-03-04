@@ -306,6 +306,8 @@ func Setup(ctx *cli.Context) error {
 
 	// pprof server
 	if ctx.Bool(pprofFlag.Name) {
+		runtime.SetMutexProfileFraction(1) //enable mutex pprof
+		runtime.SetBlockProfileRate(1)     //enable block pprof
 		listenHost := ctx.String(pprofAddrFlag.Name)
 
 		port := ctx.Int(pprofPortFlag.Name)
