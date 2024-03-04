@@ -293,14 +293,9 @@ func (dl *diffLayer) Account(hash common.Hash) (*types.SlimAccount, error) {
 //
 // Note the returned account is not a copy, please don't modify it.
 func (dl *diffLayer) AccountRLP(hash common.Hash) ([]byte, error) {
-	// Check staleness before reaching further.
-	dl.lock.RLock()
-	if dl.Stale() {
-		dl.lock.RUnlock()
-		return nil, ErrSnapshotStale
-	}
 	// Check the bloom filter first whether there's even a point in reaching into
 	// all the maps in all the layers below
+	dl.lock.RLock()
 	hit := dl.diffed.Contains(accountBloomHasher(hash))
 	if !hit {
 		hit = dl.diffed.Contains(destructBloomHasher(hash))
