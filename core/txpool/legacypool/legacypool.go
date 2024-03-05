@@ -102,6 +102,13 @@ var (
 	// that this number is pretty low, since txpool reorgs happen very frequently.
 	dropBetweenReorgHistogram = metrics.NewRegisteredHistogram("txpool/dropbetweenreorg", nil, metrics.NewExpDecaySample(1028, 0.015))
 
+	// resetDuration, promoteDuration, demoteDuration, reheapDuration, truncateDuration
+	resetDurationTimer           = metrics.NewRegisteredTimer("txpool/resettime", nil)
+	promoteDurationTimer         = metrics.NewRegisteredTimer("txpool/promotetime", nil)
+	demoteDurationTimer          = metrics.NewRegisteredTimer("txpool/demotetime", nil)
+	pendingTruncateDurationTimer = metrics.NewRegisteredTimer("txpool/pending/truncatetime", nil)
+	queueTruncateDurationTimer   = metrics.NewRegisteredTimer("txpool/queue/truncatetime", nil)
+
 	pendingGauge = metrics.NewRegisteredGauge("txpool/pending", nil)
 	queuedGauge  = metrics.NewRegisteredGauge("txpool/queued", nil)
 	localGauge   = metrics.NewRegisteredGauge("txpool/local", nil)
@@ -1347,9 +1354,11 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 	pool.mu.Lock()
+	var t1 = time.Now()
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		pool.reset(reset.oldHead, reset.newHead)
+		resetDurationTimer.Update(time.Since(t1))
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -1365,13 +1374,17 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		}
 	}
 	// Check for pending transactions for every account that sent new ones
+	t1 = time.Now()
 	promoted := pool.promoteExecutables(promoteAddrs)
+	promoteDurationTimer.Update(time.Since(t1))
 
 	// If a new block appeared, validate the pool of pending transactions. This will
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
+		t1 = time.Now()
 		pool.demoteUnexecutables()
+		demoteDurationTimer.Update(time.Since(t1))
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
 				pendingBaseFee := eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
@@ -1389,8 +1402,12 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		pool.pendingNonces.setAll(nonces)
 	}
 	// Ensure pool.queue and pool.pending sizes stay within the configured limits.
+	t1 = time.Now()
 	pool.truncatePending()
+	pendingTruncateDurationTimer.Update(time.Since(t1))
+	t1 = time.Now()
 	pool.truncateQueue()
+	queueTruncateDurationTimer.Update(time.Since(t1))
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
