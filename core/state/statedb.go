@@ -951,16 +951,26 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		}
 	}
 	usedAddrs := make([][]byte, 0, len(s.stateObjectsPending))
+
+	intermediatePending.Update(int64(len(s.stateObjectsPending)))
+	intermediateLive.Update(int64(len(s.stateObjects)))
+	t0 := time.Now()
 	for addr := range s.stateObjectsPending {
 		if obj := s.stateObjects[addr]; obj.deleted {
 			s.deleteStateObject(obj)
 			s.AccountDeleted += 1
+			intermediateDeleted.Mark(1)
 		} else {
+			t1 := time.Now()
 			s.updateStateObject(obj)
+			updateStateObjectDuration.Update(time.Since(t1))
 			s.AccountUpdated += 1
+			intermediateUpdated.Mark(1)
 		}
 		usedAddrs = append(usedAddrs, common.CopyBytes(addr[:])) // Copy needed for closure
 	}
+	intermediateDuration.Update(time.Since(t0))
+
 	if prefetcher != nil {
 		prefetcher.used(common.Hash{}, s.originalRoot, usedAddrs)
 	}

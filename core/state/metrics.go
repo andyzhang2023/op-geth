@@ -27,4 +27,11 @@ var (
 	storageTriesUpdatedMeter = metrics.NewRegisteredMeter("state/update/storagenodes", nil)
 	accountTrieDeletedMeter  = metrics.NewRegisteredMeter("state/delete/accountnodes", nil)
 	storageTriesDeletedMeter = metrics.NewRegisteredMeter("state/delete/storagenodes", nil)
+
+	intermediateDuration      = metrics.NewRegisteredTimer("state/intermedia/duration", nil)
+	updateStateObjectDuration = metrics.NewRegisteredTimer("state/intermedia/updateobj/duration", nil)
+	intermediateUpdated       = metrics.NewRegisteredMeter("state/intermedia/update", nil)
+	intermediateDeleted       = metrics.NewRegisteredMeter("state/intermedia/delete", nil)
+	intermediatePending       = metrics.NewRegisteredGauge("state/intermedia/pending", nil)
+	intermediateLive          = metrics.NewRegisteredGauge("state/intermedia/live", nil)
 )
