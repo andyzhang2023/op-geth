@@ -952,6 +952,7 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	}
 	usedAddrs := make([][]byte, 0, len(s.stateObjectsPending))
 
+	intermediateCount.Mark(1)
 	intermediatePending.Update(int64(len(s.stateObjectsPending)))
 	intermediateLive.Update(int64(len(s.stateObjects)))
 	t0 := time.Now()
