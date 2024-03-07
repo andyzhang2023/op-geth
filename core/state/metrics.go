@@ -34,4 +34,11 @@ var (
 	slotDeletionCount    = metrics.NewRegisteredMeter("state/delete/storage/slot", nil)
 	slotDeletionSize     = metrics.NewRegisteredMeter("state/delete/storage/size", nil)
 	slotDeletionSkip     = metrics.NewRegisteredGauge("state/delete/storage/skip", nil)
+
+	intermediateDuration      = metrics.NewRegisteredTimer("state/intermedia/duration", nil)
+	updateStateObjectDuration = metrics.NewRegisteredTimer("state/intermedia/updateobj/duration", nil)
+	intermediateUpdated       = metrics.NewRegisteredMeter("state/intermedia/update", nil)
+	intermediateDeleted       = metrics.NewRegisteredMeter("state/intermedia/delete", nil)
+	intermediatePending       = metrics.NewRegisteredGauge("state/intermedia/pending", nil)
+	intermediateLive          = metrics.NewRegisteredGauge("state/intermedia/live", nil)
 )
