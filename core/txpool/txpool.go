@@ -148,6 +148,11 @@ var (
 	slotsGauge   = metrics.NewRegisteredGauge("txpool/slots", nil)
 
 	reheapTimer = metrics.NewRegisteredTimer("txpool/reheap", nil)
+
+	// duration of miner worker fetching all pending transactions
+	getPendingDurationTimer = metrics.NewRegisteredTimer("txpool/getpending/time", nil)
+	// duration of miner worker fetching all local addresses
+	getLocalsDurationTimer = metrics.NewRegisteredTimer("txpool/getlocals/time", nil)
 )
 
 // TxStatus is the current status of a transaction as seen by the pool.
@@ -690,6 +695,9 @@ func (pool *TxPool) ContentFrom(addr common.Address) (types.Transactions, types.
 // transactions and only return those whose **effective** tip is large enough in
 // the next pending execution environment.
 func (pool *TxPool) Pending(enforceTips bool) map[common.Address]types.Transactions {
+	defer func(t0 time.Time) {
+		getPendingDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 	pending := make(map[common.Address]types.Transactions)
 	for addr, txs := range pool.pendingCache.dump() {
 		// If the miner requests tip enforcement, cap the lists now
@@ -710,6 +718,9 @@ func (pool *TxPool) Pending(enforceTips bool) map[common.Address]types.Transacti
 
 // Locals retrieves the accounts currently considered local by the pool.
 func (pool *TxPool) Locals() []common.Address {
+	defer func(t0 time.Time) {
+		getLocalsDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 	return pool.pendingCache.flattenLocals()
 }
 
