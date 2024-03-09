@@ -148,6 +148,19 @@ var (
 	slotsGauge   = metrics.NewRegisteredGauge("txpool/slots", nil)
 
 	reheapTimer = metrics.NewRegisteredTimer("txpool/reheap", nil)
+
+	// duration of miner worker fetching all pending transactions
+	getPendingDurationTimer = metrics.NewRegisteredTimer("txpool/getpending/time", nil)
+	// duration of miner worker fetching all local addresses
+	getLocalsDurationTimer = metrics.NewRegisteredTimer("txpool/getlocals/time", nil)
+
+	// resetDuration, promoteDuration, demoteDuration, reheapDuration, truncateDuration
+	withoutlockReorgDurationTimer = metrics.NewRegisteredTimer("txpool/withoutlock/reorgtime", nil)
+	resetDurationTimer            = metrics.NewRegisteredTimer("txpool/resettime", nil)
+	promoteDurationTimer          = metrics.NewRegisteredTimer("txpool/promotetime", nil)
+	demoteDurationTimer           = metrics.NewRegisteredTimer("txpool/demotetime", nil)
+	pendingTruncateDurationTimer  = metrics.NewRegisteredTimer("txpool/pending/truncatetime", nil)
+	queueTruncateDurationTimer    = metrics.NewRegisteredTimer("txpool/queue/truncatetime", nil)
 )
 
 // TxStatus is the current status of a transaction as seen by the pool.
@@ -283,6 +296,8 @@ type TxPool struct {
 	locals  *accountSet // Set of local transaction to exempt from eviction rules
 	journal *journal    // Journal of local transaction to back up to disk
 
+	pendingCache *cacheForMiner //cache for miner worker, to avoid reading from pending map by holding the mutex.
+
 	pending map[common.Address]*list     // All currently processable transactions
 	queue   map[common.Address]*list     // Queued but non-processable transactions
 	beats   map[common.Address]time.Time // Last heartbeat from each known account
@@ -300,6 +315,87 @@ type TxPool struct {
 	initDoneCh      chan struct{}  // is closed once the pool is initialized (for tests)
 
 	changesSinceReorg int // A counter for how many drops we've performed in-between reorg.
+}
+
+// copy of pending transactions
+type cacheForMiner struct {
+	txLock   sync.Mutex
+	pending  map[common.Address]map[*types.Transaction]struct{}
+	locals   map[common.Address]bool
+	addrLock sync.Mutex
+}
+
+func (pc *cacheForMiner) add(txs types.Transactions, signer types.Signer) {
+	if len(txs) == 0 {
+		return
+	}
+	pc.txLock.Lock()
+	defer pc.txLock.Unlock()
+	for _, tx := range txs {
+		addr, _ := types.Sender(signer, tx)
+		slots, ok := pc.pending[addr]
+		if !ok {
+			slots = make(map[*types.Transaction]struct{})
+			pc.pending[addr] = slots
+		}
+		slots[tx] = struct{}{}
+	}
+}
+
+func (pc *cacheForMiner) del(txs types.Transactions, signer types.Signer) {
+	if len(txs) == 0 {
+		return
+	}
+	pc.txLock.Lock()
+	defer pc.txLock.Unlock()
+	for _, tx := range txs {
+		addr, _ := types.Sender(signer, tx)
+		slots, ok := pc.pending[addr]
+		if !ok {
+			continue
+		}
+		delete(slots, tx)
+		if len(slots) == 0 {
+			delete(pc.pending, addr)
+		}
+	}
+}
+
+func (pc *cacheForMiner) dump() map[common.Address]types.Transactions {
+	txs := make(map[common.Address]types.Transactions)
+	pc.txLock.Lock()
+	defer pc.txLock.Unlock()
+	for addr, txlist := range pc.pending {
+		txs[addr] = make(types.Transactions, 0, len(txlist))
+		for tx := range txlist {
+			txs[addr] = append(txs[addr], tx)
+		}
+		// sorted by nonce
+		sort.Sort(types.TxByNonce(txs[addr]))
+	}
+	return txs
+}
+
+func (pc *cacheForMiner) markLocal(addr common.Address) {
+	pc.addrLock.Lock()
+	defer pc.addrLock.Unlock()
+	pc.locals[addr] = true
+}
+
+func (pc *cacheForMiner) isLocal(addr common.Address) bool {
+	pc.addrLock.Lock()
+	defer pc.addrLock.Unlock()
+	return pc.locals[addr]
+}
+
+func (pc *cacheForMiner) flattenLocals() []common.Address {
+	pc.addrLock.Lock()
+	defer pc.addrLock.Unlock()
+	locals := make([]common.Address, 0, len(pc.locals))
+	for addr := range pc.locals {
+		locals = append(locals, addr)
+	}
+	return locals
 }
 
 type txpoolResetRequest struct {
@@ -330,11 +426,16 @@ func NewTxPool(config Config, chainconfig *params.ChainConfig, chain blockChain)
 		reorgShutdownCh: make(chan struct{}),
 		initDoneCh:      make(chan struct{}),
 		gasPrice:        new(big.Int).SetUint64(config.PriceLimit),
+		pendingCache: &cacheForMiner{
+			pending: make(map[common.Address]map[*types.Transaction]struct{}),
+			locals:  make(map[common.Address]bool),
+		},
 	}
 	pool.locals = newAccountSet(pool.signer)
 	for _, addr := range config.Locals {
 		log.Info("Setting new local account", "address", addr)
 		pool.locals.add(addr)
+		pool.pendingCache.markLocal(addr)
 	}
 	pool.priced = newPricedList(pool.all)
 	pool.reset(nil, chain.CurrentBlock())
@@ -602,15 +703,13 @@ func (pool *TxPool) ContentFrom(addr common.Address) (types.Transactions, types.
 // transactions and only return those whose **effective** tip is large enough in
 // the next pending execution environment.
 func (pool *TxPool) Pending(enforceTips bool) map[common.Address]types.Transactions {
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
-
+	defer func(t0 time.Time) {
+		getPendingDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 	pending := make(map[common.Address]types.Transactions)
-	for addr, list := range pool.pending {
-		txs := list.Flatten()
-
+	for addr, txs := range pool.pendingCache.dump() {
 		// If the miner requests tip enforcement, cap the lists now
-		if enforceTips && !pool.locals.contains(addr) {
+		if enforceTips && !pool.pendingCache.isLocal(addr) {
 			for i, tx := range txs {
 				if tx.EffectiveGasTipIntCmp(pool.gasPrice, pool.priced.urgent.baseFee) < 0 {
 					txs = txs[:i]
@@ -627,10 +726,10 @@ func (pool *TxPool) Pending(enforceTips bool) map[common.Address]types.Transacti
 
 // Locals retrieves the accounts currently considered local by the pool.
 func (pool *TxPool) Locals() []common.Address {
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
-
-	return pool.locals.flatten()
+	defer func(t0 time.Time) {
+		getLocalsDurationTimer.Update(time.Since(t0))
+	}(time.Now())
+	return pool.pendingCache.flattenLocals()
 }
 
 // local retrieves all currently known local transactions, grouped by origin
@@ -866,6 +965,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 			meter(ReplaceUnderpriced).Mark(1)
 			return false, ErrReplaceUnderpriced
 		}
+		pool.pendingCache.add([]*types.Transaction{tx}, pool.signer)
 		// New transaction is better, replace old one
 		if old != nil {
 			pool.all.Remove(old.Hash())
@@ -891,6 +991,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 	if local && !pool.locals.contains(from) {
 		log.Info("Setting new local account", "address", from)
 		pool.locals.add(from)
+		pool.pendingCache.markLocal(from)
 		pool.priced.Removed(pool.all.RemoteToLocals(pool.locals)) // Migrate the remotes if it's marked as local first time.
 	}
 	if isLocal {
@@ -994,8 +1095,11 @@ func (pool *TxPool) promoteTx(addr common.Address, hash common.Hash, tx *types.T
 		pool.all.Remove(old.Hash())
 		pool.priced.Removed(1)
 		pendingReplaceMeter.Mark(1)
+		pool.pendingCache.add([]*types.Transaction{tx}, pool.signer)
+		pool.pendingCache.del([]*types.Transaction{old}, pool.signer)
 	} else {
 		// Nothing was replaced, bump the pending counter
+		pool.pendingCache.add([]*types.Transaction{tx}, pool.signer)
 		pendingGauge.Inc(1)
 	}
 	// Set the potentially new pending nonce and notify any subsystems of the new tx
@@ -1189,6 +1293,7 @@ func (pool *TxPool) removeTx(hash common.Hash, outofbound bool) int {
 			pool.pendingNonces.setIfLower(addr, tx.Nonce())
 			// Reduce the pending counter
 			pendingGauge.Dec(int64(1 + len(invalids)))
+			pool.pendingCache.del(append(invalids, tx), pool.signer)
 			return 1 + len(invalids)
 		}
 	}
@@ -1323,9 +1428,11 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 	pool.mu.Lock()
+	tr, t1 := time.Now(), time.Now()
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		pool.reset(reset.oldHead, reset.newHead)
+		resetDurationTimer.Update(time.Since(t1))
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -1341,13 +1448,17 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		}
 	}
 	// Check for pending transactions for every account that sent new ones
+	t1 = time.Now()
 	promoted := pool.promoteExecutables(promoteAddrs)
+	promoteDurationTimer.Update(time.Since(t1))
 
 	// If a new block appeared, validate the pool of pending transactions. This will
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
+		t1 = time.Now()
 		pool.demoteUnexecutables()
+		demoteDurationTimer.Update(time.Since(t1))
 		if reset.newHead != nil && pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
 			pendingBaseFee := misc.CalcBaseFee(pool.chainconfig, reset.newHead)
 			pool.priced.SetBaseFee(pendingBaseFee)
@@ -1361,11 +1472,16 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		pool.pendingNonces.setAll(nonces)
 	}
 	// Ensure pool.queue and pool.pending sizes stay within the configured limits.
+	t1 = time.Now()
 	pool.truncatePending()
+	pendingTruncateDurationTimer.Update(time.Since(t1))
+	t1 = time.Now()
 	pool.truncateQueue()
+	queueTruncateDurationTimer.Update(time.Since(t1))
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
+	withoutlockReorgDurationTimer.Update(time.Since(tr))
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
@@ -1593,6 +1709,7 @@ func (pool *TxPool) truncatePending() {
 	}
 	// Gradually drop transactions from offenders
 	offenders := []common.Address{}
+	var dropPendingCache []*types.Transaction
 	for pending > pool.config.GlobalSlots && !spammers.Empty() {
 		// Retrieve the next offender if not local address
 		offender, _ := spammers.Pop()
@@ -1618,6 +1735,7 @@ func (pool *TxPool) truncatePending() {
 						pool.pendingNonces.setIfLower(offenders[i], tx.Nonce())
 						log.Trace("Removed fairness-exceeding pending transaction", "hash", hash)
 					}
+					dropPendingCache = append(dropPendingCache, caps...)
 					pool.priced.Removed(len(caps))
 					pendingGauge.Dec(int64(len(caps)))
 					if pool.locals.contains(offenders[i]) {
@@ -1645,6 +1763,7 @@ func (pool *TxPool) truncatePending() {
 					pool.pendingNonces.setIfLower(addr, tx.Nonce())
 					log.Trace("Removed fairness-exceeding pending transaction", "hash", hash)
 				}
+				dropPendingCache = append(dropPendingCache, caps...)
 				pool.priced.Removed(len(caps))
 				pendingGauge.Dec(int64(len(caps)))
 				if pool.locals.contains(addr) {
@@ -1654,6 +1773,7 @@ func (pool *TxPool) truncatePending() {
 			}
 		}
 	}
+	pool.pendingCache.del(dropPendingCache, pool.signer)
 	pendingRateLimitMeter.Mark(int64(pendingBeforeCap - pending))
 }
 
@@ -1712,6 +1832,7 @@ func (pool *TxPool) truncateQueue() {
 func (pool *TxPool) demoteUnexecutables() {
 	// Iterate over all accounts and demote any non-executable transactions
 	for addr, list := range pool.pending {
+		var dropPendingCache []*types.Transaction
 		nonce := pool.currentState.GetNonce(addr)
 
 		// Drop all transactions that are deemed too old (low nonce)
@@ -1745,6 +1866,9 @@ func (pool *TxPool) demoteUnexecutables() {
 			// Internal shuffle shouldn't touch the lookup set.
 			pool.enqueueTx(hash, tx, false, false)
 		}
+		dropPendingCache = append(dropPendingCache, olds...)
+		dropPendingCache = append(dropPendingCache, invalids...)
+		dropPendingCache = append(dropPendingCache, drops...)
 		pendingGauge.Dec(int64(len(olds) + len(drops) + len(invalids)))
 		if pool.locals.contains(addr) {
 			localGauge.Dec(int64(len(olds) + len(drops) + len(invalids)))
@@ -1759,12 +1883,14 @@ func (pool *TxPool) demoteUnexecutables() {
 				// Internal shuffle shouldn't touch the lookup set.
 				pool.enqueueTx(hash, tx, false, false)
 			}
+			dropPendingCache = append(dropPendingCache, gapped...)
 			pendingGauge.Dec(int64(len(gapped)))
 		}
 		// Delete the entire pending entry if it became empty.
 		if list.Empty() {
 			delete(pool.pending, addr)
 		}
+		pool.pendingCache.del(dropPendingCache, pool.signer)
 	}
 }
 
