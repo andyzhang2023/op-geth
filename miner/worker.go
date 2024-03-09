@@ -35,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 )
@@ -83,6 +84,18 @@ var (
 	errBlockInterruptedByNewHead  = errors.New("new head arrived while building block")
 	errBlockInterruptedByRecommit = errors.New("recommit interrupt while building block")
 	errBlockInterruptedByTimeout  = errors.New("timeout while building block")
+)
+
+// metrics
+var (
+	txFromPool               = metrics.NewRegisteredMeter("miner/tx/from/pool", nil)
+	txExecTotal              = metrics.NewRegisteredMeter("miner/tx/exec/total", nil)
+	txExecSucc               = metrics.NewRegisteredMeter("miner/tx/exec/succ", nil)
+	txExecFailGaslimit       = metrics.NewRegisteredMeter("miner/tx/exec/fail/gaslimit", nil)
+	txExecFailNoncetoolow    = metrics.NewRegisteredMeter("miner/tx/exec/fail/noncetoolow", nil)
+	txExecFailNoncetooheigh  = metrics.NewRegisteredMeter("miner/tx/exec/fail/noncetooheigh", nil)
+	txExecFailUnknown        = metrics.NewRegisteredMeter("miner/tx/exec/fail/unknown", nil)
+	txExecFailTypenotsupport = metrics.NewRegisteredMeter("miner/tx/exec/fail/typenotsupport", nil)
 )
 
 // environment is the worker's current environment and holds all
@@ -980,42 +993,50 @@ func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByP
 			txs.Pop()
 			continue
 		}
+		txExecTotal.Mark(1)
 		// Start executing the transaction
 		env.state.SetTxContext(tx.Hash(), env.tcount)
 
 		logs, err := w.commitTransaction(env, tx)
+
 		switch {
 		case errors.Is(err, core.ErrGasLimitReached):
 			// Pop the current out-of-gas transaction without shifting in the next from the account
 			log.Trace("Gas limit exceeded for current block", "sender", from)
 			txs.Pop()
+			txExecFailGaslimit.Mark(1)
 
 		case errors.Is(err, core.ErrNonceTooLow):
 			// New head notification data race between the transaction pool and miner, shift
 			log.Trace("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
 			txs.Shift()
+			txExecFailNoncetoolow.Mark(1)
 
 		case errors.Is(err, core.ErrNonceTooHigh):
 			// Reorg notification data race between the transaction pool and miner, skip account =
 			log.Trace("Skipping account with hight nonce", "sender", from, "nonce", tx.Nonce())
 			txs.Pop()
+			txExecFailNoncetooheigh.Mark(1)
 
 		case errors.Is(err, nil):
 			// Everything ok, collect the logs and shift in the next transaction from the same account
 			coalescedLogs = append(coalescedLogs, logs...)
 			env.tcount++
 			txs.Shift()
+			txExecSucc.Mark(1)
 
 		case errors.Is(err, types.ErrTxTypeNotSupported):
 			// Pop the unsupported transaction without shifting in the next from the account
 			log.Trace("Skipping unsupported transaction type", "sender", from, "type", tx.Type())
 			txs.Pop()
+			txExecFailTypenotsupport.Mark(1)
 
 		default:
 			// Strange error, discard the transaction and get the next in line (note, the
 			// nonce-too-high clause will prevent us from executing in vain).
 			log.Debug("Transaction failed, account skipped", "hash", tx.Hash(), "err", err)
 			txs.Shift()
+			txExecFailUnknown.Mark(1)
 		}
 	}
 	if !w.isRunning() && len(coalescedLogs) > 0 {
@@ -1147,6 +1168,12 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 	// Split the pending transactions into locals and remotes
 	// Fill the block with all available pending transactions.
 	pending := w.eth.TxPool().Pending(true)
+
+	// report metrics
+	for _, txlist := range pending {
+		txFromPool.Mark(int64(len(txlist)))
+	}
+
 	localTxs, remoteTxs := make(map[common.Address]types.Transactions), pending
 	for _, account := range w.eth.TxPool().Locals() {
 		if txs := remoteTxs[account]; len(txs) > 0 {
