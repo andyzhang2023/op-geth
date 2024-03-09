@@ -85,11 +85,15 @@ var (
 
 // metrics
 var (
-	txFromPool            = metrics.NewRegisteredMeter("miner/tx/from/pool", nil)
-	txExecTotal           = metrics.NewRegisteredMeter("miner/tx/exec/total", nil)
-	txExecSucc            = metrics.NewRegisteredMeter("miner/tx/exec/succ", nil)
-	txExecFailNoncetoolow = metrics.NewRegisteredMeter("miner/tx/exec/fail/noncetoolow", nil)
-	txExecFailUnknown     = metrics.NewRegisteredMeter("miner/tx/exec/fail/unknown", nil)
+	txFromPool                 = metrics.NewRegisteredMeter("miner/tx/from/pool", nil)
+	txExecTotal                = metrics.NewRegisteredMeter("miner/tx/exec/total", nil)
+	txExecSucc                 = metrics.NewRegisteredMeter("miner/tx/exec/succ", nil)
+	txExecFailNoncetoolow      = metrics.NewRegisteredMeter("miner/tx/exec/fail/noncetoolow", nil)
+	txExecFailNotEnoughgas     = metrics.NewRegisteredMeter("miner/tx/exec/fail/not/enoughgas", nil)
+	txExecFailNotEnoughblobgas = metrics.NewRegisteredMeter("miner/tx/exec/fail/not/enoughblobgas", nil)
+	txExecFailEvited           = metrics.NewRegisteredMeter("miner/tx/exec/fail/evited", nil)
+	txExecFailNotEip155        = metrics.NewRegisteredMeter("miner/tx/exec/fail/not/eip155", nil)
+	txExecFailUnknown          = metrics.NewRegisteredMeter("miner/tx/exec/fail/unknown", nil)
 )
 
 // environment is the worker's current environment and holds all
@@ -881,15 +885,18 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 		if ltx == nil {
 			break
 		}
+		txExecTotal.Mark(1)
 		// If we don't have enough space for the next transaction, skip the account.
 		if env.gasPool.Gas() < ltx.Gas {
 			log.Trace("Not enough gas left for transaction", "hash", ltx.Hash, "left", env.gasPool.Gas(), "needed", ltx.Gas)
 			txs.Pop()
+			txExecFailNotEnoughgas.Mark(1)
 			continue
 		}
 		if left := uint64(params.MaxBlobGasPerBlock - env.blobs*params.BlobTxBlobGasPerBlob); left < ltx.BlobGas {
 			log.Trace("Not enough blob gas left for transaction", "hash", ltx.Hash, "left", left, "needed", ltx.BlobGas)
 			txs.Pop()
+			txExecFailNotEnoughblobgas.Mark(1)
 			continue
 		}
 		// Transaction seems to fit, pull it up from the pool
@@ -897,9 +904,9 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 		if tx == nil {
 			log.Trace("Ignoring evicted transaction", "hash", ltx.Hash)
 			txs.Pop()
+			txExecFailEvited.Mark(1)
 			continue
 		}
-		txExecTotal.Mark(1)
 		// Error may be ignored here. The error has already been checked
 		// during transaction acceptance is the transaction pool.
 		from, _ := types.Sender(env.signer, tx)
@@ -909,6 +916,7 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 		if tx.Protected() && !w.chainConfig.IsEIP155(env.header.Number) {
 			log.Trace("Ignoring replay protected transaction", "hash", ltx.Hash, "eip155", w.chainConfig.EIP155Block)
 			txs.Pop()
+			txExecFailNotEip155.Mark(1)
 			continue
 		}
 		// Start executing the transaction
