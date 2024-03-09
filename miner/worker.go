@@ -38,6 +38,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 )
@@ -80,6 +81,15 @@ var (
 	errBlockInterruptedByNewHead  = errors.New("new head arrived while building block")
 	errBlockInterruptedByRecommit = errors.New("recommit interrupt while building block")
 	errBlockInterruptedByTimeout  = errors.New("timeout while building block")
+)
+
+// metrics
+var (
+	txFromPool            = metrics.NewRegisteredMeter("miner/tx/from/pool", nil)
+	txExecTotal           = metrics.NewRegisteredMeter("miner/tx/exec/total", nil)
+	txExecSucc            = metrics.NewRegisteredMeter("miner/tx/exec/succ", nil)
+	txExecFailNoncetoolow = metrics.NewRegisteredMeter("miner/tx/exec/fail/noncetoolow", nil)
+	txExecFailUnknown     = metrics.NewRegisteredMeter("miner/tx/exec/fail/unknown", nil)
 )
 
 // environment is the worker's current environment and holds all
@@ -889,6 +899,7 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 			txs.Pop()
 			continue
 		}
+		txExecTotal.Mark(1)
 		// Error may be ignored here. The error has already been checked
 		// during transaction acceptance is the transaction pool.
 		from, _ := types.Sender(env.signer, tx)
@@ -909,18 +920,21 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 			// New head notification data race between the transaction pool and miner, shift
 			log.Trace("Skipping transaction with low nonce", "hash", ltx.Hash, "sender", from, "nonce", tx.Nonce())
 			txs.Shift()
+			txExecFailNoncetoolow.Mark(1)
 
 		case errors.Is(err, nil):
 			// Everything ok, collect the logs and shift in the next transaction from the same account
 			coalescedLogs = append(coalescedLogs, logs...)
 			env.tcount++
 			txs.Shift()
+			txExecSucc.Mark(1)
 
 		default:
 			// Transaction is regarded as invalid, drop all consecutive transactions from
 			// the same sender because of `nonce-too-high` clause.
 			log.Debug("Transaction failed, account skipped", "hash", ltx.Hash, "err", err)
 			txs.Pop()
+			txExecFailUnknown.Mark(1)
 		}
 	}
 	if !w.isRunning() && len(coalescedLogs) > 0 {
@@ -1054,7 +1068,12 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 
 	pending := w.eth.TxPool().Pending(true)
 	log.Info("got pending from pool", "parent hash", env.header.ParentHash, "duration", common.PrettyDuration(time.Since(start)))
-	
+
+	// report metrics
+	for _, txlist := range pending {
+		txFromPool.Mark(int64(len(txlist)))
+	}
+
 	// Split the pending transactions into locals and remotes.
 	start1 := time.Now()
 	localTxs, remoteTxs := make(map[common.Address][]*txpool.LazyTransaction), pending
@@ -1065,7 +1084,6 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 		}
 	}
 	log.Info("got locals from pool", "parent hash", env.header.ParentHash, "duration", common.PrettyDuration(time.Since(start1)))
-
 
 	// Fill the block with all available pending transactions.
 	if len(localTxs) > 0 {
