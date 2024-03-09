@@ -96,6 +96,7 @@ var (
 	txExecFailNoncetooheigh  = metrics.NewRegisteredMeter("miner/tx/exec/fail/noncetooheigh", nil)
 	txExecFailUnknown        = metrics.NewRegisteredMeter("miner/tx/exec/fail/unknown", nil)
 	txExecFailTypenotsupport = metrics.NewRegisteredMeter("miner/tx/exec/fail/typenotsupport", nil)
+	txExecFailNotEip155      = metrics.NewRegisteredMeter("miner/tx/exec/fail/not/eip155", nil)
 )
 
 // environment is the worker's current environment and holds all
@@ -981,6 +982,7 @@ func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByP
 		if tx == nil {
 			break
 		}
+		txExecTotal.Mark(1)
 		// Error may be ignored here. The error has already been checked
 		// during transaction acceptance is the transaction pool.
 		from, _ := types.Sender(env.signer, tx)
@@ -989,11 +991,10 @@ func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByP
 		// phase, start ignoring the sender until we do.
 		if tx.Protected() && !w.chainConfig.IsEIP155(env.header.Number) {
 			log.Trace("Ignoring reply protected transaction", "hash", tx.Hash(), "eip155", w.chainConfig.EIP155Block)
-
 			txs.Pop()
+			txExecFailNotEip155.Mark(1)
 			continue
 		}
-		txExecTotal.Mark(1)
 		// Start executing the transaction
 		env.state.SetTxContext(tx.Hash(), env.tcount)
 
