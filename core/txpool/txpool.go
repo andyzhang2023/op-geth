@@ -356,13 +356,15 @@ func (pc *cacheForMiner) del(txs types.Transactions, signer types.Signer) {
 func (pc *cacheForMiner) dump() map[common.Address]types.Transactions {
 	txs := make(map[common.Address]types.Transactions)
 	pc.txLock.Lock()
-	defer pc.txLock.Unlock()
 	for addr, txlist := range pc.pending {
 		txs[addr] = make(types.Transactions, 0, len(txlist))
 		for tx := range txlist {
 			txs[addr] = append(txs[addr], tx)
 		}
-		// sorted by nonce
+	}
+	pc.txLock.Unlock()
+	// sorted by nonce
+	for addr := range txs {
 		sort.Sort(types.TxByNonce(txs[addr]))
 	}
 	return txs
