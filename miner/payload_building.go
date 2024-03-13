@@ -169,7 +169,12 @@ func (payload *Payload) ResolveFull() *engine.ExecutionPayloadEnvelope {
 			return nil
 		default:
 		}
+		// Wait the full payload construction. Note it might block
+		// forever if Resolve is called in the meantime which
+		// terminates the background construction process.
+		start := time.Now()
 		payload.cond.Wait()
+		waitPayloadTimer.UpdateSince(start)
 	}
 	return engine.BlockToExecutableData(payload.full, payload.fullFees)
 }

@@ -1146,7 +1146,9 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 	// Split the pending transactions into locals and remotes
 	// Fill the block with all available pending transactions.
+	start := time.Now()
 	pending := w.eth.TxPool().Pending(true)
+	packFromTxpoolTimer.UpdateSince(start)
 	localTxs, remoteTxs := make(map[common.Address]types.Transactions), pending
 	for _, account := range w.eth.TxPool().Locals() {
 		if txs := remoteTxs[account]; len(txs) > 0 {
@@ -1154,6 +1156,17 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 			localTxs[account] = txs
 		}
 	}
+
+	// TODO will remove after fix txpool perf issue
+	// for _, account := range w.eth.TxPool().Locals() {
+	// 	if txs := remoteTxs[account]; len(txs) > 0 {
+	// 		delete(remoteTxs, account)
+	// 		localTxs[account] = txs
+	// 	}
+	// }
+
+	// Fill the block with all available pending transactions.
+	start = time.Now()
 	if len(localTxs) > 0 {
 		txs := types.NewTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
 		if err := w.commitTransactions(env, txs, interrupt); err != nil {
@@ -1166,6 +1179,7 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 			return err
 		}
 	}
+	commitTxpoolTxsTimer.UpdateSince(start)
 	return nil
 }
 
@@ -1184,6 +1198,7 @@ func (w *worker) generateWork(genParams *generateParams) (*types.Block, *big.Int
 		work.gasPool = new(core.GasPool).AddGas(work.header.GasLimit)
 	}
 
+	start := time.Now()
 	for _, tx := range genParams.txs {
 		from, _ := types.Sender(work.signer, tx)
 		work.state.SetTxContext(tx.Hash(), work.tcount)
@@ -1193,6 +1208,7 @@ func (w *worker) generateWork(genParams *generateParams) (*types.Block, *big.Int
 		}
 		work.tcount++
 	}
+	commitDepositTxsTimer.UpdateSince(start)
 
 	// forced transactions done, fill rest of block with transactions
 	if !genParams.noTxs {
@@ -1207,10 +1223,22 @@ func (w *worker) generateWork(genParams *generateParams) (*types.Block, *big.Int
 			log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout))
 		}
 	}
+	start = time.Now()
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, work.unclelist(), work.receipts, genParams.withdrawals)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	assembleBlockTimer.UpdateSince(start)
+
+	accountReadTimer.Update(work.state.AccountReads)                 // Account reads are complete(in commit txs)
+	storageReadTimer.Update(work.state.StorageReads)                 // Storage reads are complete(in commit txs)
+	snapshotAccountReadTimer.Update(work.state.SnapshotAccountReads) // Account reads are complete(in commit txs)
+	snapshotStorageReadTimer.Update(work.state.SnapshotStorageReads) // Storage reads are complete(in commit txs)
+	accountUpdateTimer.Update(work.state.AccountUpdates)             // Account updates are complete(in FinalizeAndAssemble)
+	storageUpdateTimer.Update(work.state.StorageUpdates)             // Storage updates are complete(in FinalizeAndAssemble)
+	accountHashTimer.Update(work.state.AccountHashes)                // Account hashes are complete(in FinalizeAndAssemble)
+	storageHashTimer.Update(work.state.StorageHashes)                // Storage hashes are complete(in FinalizeAndAssemble)
+
 	return block, totalFees(block, work.receipts), work, nil
 }
 
