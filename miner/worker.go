@@ -1047,7 +1047,9 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 // into the given sealing block. The transaction selection and ordering strategy can
 // be customized with the plugin in the future.
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) error {
+	start := time.Now()
 	pending := w.eth.TxPool().Pending(true)
+	packFromTxpoolTimer.UpdateSince(start)
 
 	// Split the pending transactions into locals and remotes.
 	localTxs, remoteTxs := make(map[common.Address][]*txpool.LazyTransaction), pending
@@ -1059,6 +1061,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	}
 
 	// Fill the block with all available pending transactions.
+	start = time.Now()
 	if len(localTxs) > 0 {
 		txs := newTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
 		if err := w.commitTransactions(env, txs, interrupt); err != nil {
@@ -1071,6 +1074,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 			return err
 		}
 	}
+	commitTxpoolTxsTimer.UpdateSince(start)
 	return nil
 }
 
@@ -1092,6 +1096,7 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 	// opBNB no need to hard code this contract via hardfork
 	// misc.EnsureCreate2Deployer(w.chainConfig, work.header.Time, work.state)
 
+	start := time.Now()
 	for _, tx := range genParams.txs {
 		from, _ := types.Sender(work.signer, tx)
 		work.state.SetTxContext(tx.Hash(), work.tcount)
@@ -1101,6 +1106,7 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 		}
 		work.tcount++
 	}
+	commitDepositTxsTimer.UpdateSince(start)
 
 	// forced transactions done, fill rest of block with transactions
 	if !genParams.noTxs {
@@ -1115,10 +1121,23 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 			log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout))
 		}
 	}
+
+	start = time.Now()
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, nil, work.receipts, genParams.withdrawals)
 	if err != nil {
 		return &newPayloadResult{err: err}
 	}
+	assembleBlockTimer.UpdateSince(start)
+
+	accountReadTimer.Update(work.state.AccountReads)                 // Account reads are complete(in commit txs)
+	storageReadTimer.Update(work.state.StorageReads)                 // Storage reads are complete(in commit txs)
+	snapshotAccountReadTimer.Update(work.state.SnapshotAccountReads) // Account reads are complete(in commit txs)
+	snapshotStorageReadTimer.Update(work.state.SnapshotStorageReads) // Storage reads are complete(in commit txs)
+	accountUpdateTimer.Update(work.state.AccountUpdates)             // Account updates are complete(in FinalizeAndAssemble)
+	storageUpdateTimer.Update(work.state.StorageUpdates)             // Storage updates are complete(in FinalizeAndAssemble)
+	accountHashTimer.Update(work.state.AccountHashes)                // Account hashes are complete(in FinalizeAndAssemble)
+	storageHashTimer.Update(work.state.StorageHashes)                // Storage hashes are complete(in FinalizeAndAssemble)
+
 	return &newPayloadResult{
 		block:    block,
 		fees:     totalFees(block, work.receipts),
