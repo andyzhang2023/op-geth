@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -311,10 +312,12 @@ type TxPool struct {
 
 // copy of pending transactions
 type cacheForMiner struct {
-	txLock   sync.Mutex
-	pending  map[common.Address]map[*types.Transaction]struct{}
-	locals   map[common.Address]bool
-	addrLock sync.Mutex
+	txLock             sync.Mutex
+	pending            map[common.Address]map[*types.Transaction]struct{}
+	locals             map[common.Address]bool
+	pendingWithoutTips atomic.Value
+	pendingWithTips    atomic.Value
+	addrLock           sync.Mutex
 }
 
 func (pc *cacheForMiner) add(txs types.Transactions, signer types.Signer) {
@@ -353,21 +356,46 @@ func (pc *cacheForMiner) del(txs types.Transactions, signer types.Signer) {
 	}
 }
 
-func (pc *cacheForMiner) dump() map[common.Address]types.Transactions {
-	txs := make(map[common.Address]types.Transactions)
+func (pc *cacheForMiner) dump(gasPrice, baseFee *big.Int) {
+	pending := make(map[common.Address]types.Transactions)
 	pc.txLock.Lock()
 	for addr, txlist := range pc.pending {
-		txs[addr] = make(types.Transactions, 0, len(txlist))
+		pending[addr] = make(types.Transactions, 0, len(txlist))
 		for tx := range txlist {
-			txs[addr] = append(txs[addr], tx)
+			pending[addr] = append(pending[addr], tx)
 		}
 	}
 	pc.txLock.Unlock()
 	// sorted by nonce
-	for addr := range txs {
-		sort.Sort(types.TxByNonce(txs[addr]))
+	for addr := range pending {
+		sort.Sort(types.TxByNonce(pending[addr]))
 	}
-	return txs
+	pendingWithTips := make(map[common.Address]types.Transactions)
+	for addr, txs := range pending {
+		// If the miner requests tip enforcement, cap the lists now
+		if !pc.isLocal(addr) {
+			for i, tx := range txs {
+				if tx.EffectiveGasTipIntCmp(gasPrice, baseFee) < 0 {
+					txs = txs[:i]
+					break
+				}
+			}
+		}
+		if len(txs) > 0 {
+			pendingWithTips[addr] = txs
+		}
+	}
+	// store pending
+	pc.pendingWithTips.Store(pendingWithTips)
+	pc.pendingWithoutTips.Store(pending)
+}
+
+func (pc *cacheForMiner) pendingTxs(enforceTips bool) map[common.Address]types.Transactions {
+	if enforceTips {
+		return pc.pendingWithTips.Load().(map[common.Address]types.Transactions)
+	} else {
+		return pc.pendingWithoutTips.Load().(map[common.Address]types.Transactions)
+	}
 }
 
 func (pc *cacheForMiner) markLocal(addr common.Address) {
@@ -700,22 +728,7 @@ func (pool *TxPool) Pending(enforceTips bool) map[common.Address]types.Transacti
 	defer func(t0 time.Time) {
 		getPendingDurationTimer.Update(time.Since(t0))
 	}(time.Now())
-	pending := make(map[common.Address]types.Transactions)
-	for addr, txs := range pool.pendingCache.dump() {
-		// If the miner requests tip enforcement, cap the lists now
-		if enforceTips && !pool.pendingCache.isLocal(addr) {
-			for i, tx := range txs {
-				if tx.EffectiveGasTipIntCmp(pool.gasPrice, pool.priced.urgent.baseFee) < 0 {
-					txs = txs[:i]
-					break
-				}
-			}
-		}
-		if len(txs) > 0 {
-			pending[addr] = txs
-		}
-	}
-	return pending
+	return pool.pendingCache.pendingTxs(enforceTips)
 }
 
 // Locals retrieves the accounts currently considered local by the pool.
@@ -1447,10 +1460,12 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
 		pool.demoteUnexecutables()
+		var pendingBaseFee = pool.priced.urgent.baseFee
 		if reset.newHead != nil && pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
-			pendingBaseFee := misc.CalcBaseFee(pool.chainconfig, reset.newHead)
+			pendingBaseFee = misc.CalcBaseFee(pool.chainconfig, reset.newHead)
 			pool.priced.SetBaseFee(pendingBaseFee)
 		}
+		go pool.pendingCache.dump(pool.gasPrice, pendingBaseFee)
 		// Update all accounts to the latest known pending nonce
 		nonces := make(map[common.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {
