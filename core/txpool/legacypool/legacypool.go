@@ -115,6 +115,11 @@ var (
 	getPendingDurationTimer = metrics.NewRegisteredTimer("txpool/getpending/time", nil)
 	// duration of miner worker fetching all local addresses
 	getLocalsDurationTimer = metrics.NewRegisteredTimer("txpool/getlocals/time", nil)
+	// metrics of adding transactions
+	addDurationTimer         = metrics.NewRegisteredTimer("txpool/add/duration", nil)
+	addBlockingDurationTimer = metrics.NewRegisteredTimer("txpool/add/blocking/duration", nil)
+	addLockedDurationTimer   = metrics.NewRegisteredTimer("txpool/add/locked/duration", nil)
+	addValidateDurationTimer = metrics.NewRegisteredTimer("txpool/add/validate/duration", nil)
 )
 
 // BlockChain defines the minimal set of methods needed to back a tx pool with
@@ -733,7 +738,10 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 	isLocal := local || pool.locals.containsTx(tx)
 
 	// If the transaction fails basic validation, discard it
-	if err := pool.validateTx(tx, isLocal); err != nil {
+	t0 := time.Now()
+	err = pool.validateTx(tx, isLocal)
+	addValidateDurationTimer.Update(time.Since(t0))
+	if err != nil {
 		log.Trace("Discarding invalid transaction", "hash", hash, "err", err)
 		invalidTxMeter.Mark(1)
 		return false, err
@@ -1036,6 +1044,9 @@ func (pool *LegacyPool) addRemoteSync(tx *types.Transaction) error {
 // If sync is set, the method will block until all internal maintenance related
 // to the add is finished. Only use this during tests for determinism!
 func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error {
+	defer func(t0 time.Time) {
+		addDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 	// Do not treat as local if local transactions have been disabled
 	local = local && !pool.config.NoLocals
 
@@ -1067,9 +1078,13 @@ func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error 
 	}
 
 	// Process all the new transaction and merge any errors into the original slice
+	t0 := time.Now()
 	pool.mu.Lock()
+	t1 := time.Now()
 	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
+	addLockedDurationTimer.Update(time.Since(t1))
 	pool.mu.Unlock()
+	addBlockingDurationTimer.Update(time.Since(t0))
 
 	var nilSlot = 0
 	for _, err := range newErrs {

@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -27,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -34,6 +36,13 @@ import (
 // It is removed from the tx pool max gas to better indicate that L2 transactions
 // are not able to consume all of the gas in a L2 block as the L1 info deposit is always present.
 const l1InfoGasOverhead = uint64(70_000)
+
+var (
+	// metrics
+	addValidateSenderDurationTimer      = metrics.NewRegisteredTimer("txpool/add/validate/sender/duration", nil)
+	addValidateGetNonceDurationTimer    = metrics.NewRegisteredTimer("txpool/add/validate/getnonce/duration", nil)
+	addValidateBasicSenderDurationTimer = metrics.NewRegisteredTimer("txpool/add/validate/basic/sender/duration", nil)
+)
 
 func EffectiveGasLimit(chainConfig *params.ChainConfig, gasLimit uint64) uint64 {
 	if chainConfig.Optimism != nil {
@@ -121,7 +130,10 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 		return core.ErrTipAboveFeeCap
 	}
 	// Make sure the transaction is signed properly
-	if _, err := types.Sender(signer, tx); err != nil {
+	t0 := time.Now()
+	_, err := types.Sender(signer, tx)
+	addValidateBasicSenderDurationTimer.Update(time.Since(t0))
+	if err != nil {
 		Meter(InvalidSender).Mark(1)
 		return ErrInvalidSender
 	}
@@ -235,12 +247,17 @@ type ValidationOptionsWithState struct {
 // rules without duplicating code and running the risk of missed updates.
 func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, opts *ValidationOptionsWithState) error {
 	// Ensure the transaction adheres to nonce ordering
-	from, err := signer.Sender(tx) // already validated (and cached), but cleaner to check
+	t0 := time.Now()
+	from, err := types.Sender(signer, tx) // already validated (and cached), just use it
+	addValidateSenderDurationTimer.Update(time.Since(t0))
+
 	if err != nil {
 		log.Error("Transaction sender recovery failed", "err", err)
 		return err
 	}
+	t0 = time.Now()
 	next := opts.State.GetNonce(from)
+	addValidateGetNonceDurationTimer.Update(time.Since(t0))
 	if next > tx.Nonce() {
 		Meter(NonceTooLow).Mark(1)
 		return fmt.Errorf("%w: next nonce %v, tx nonce %v", core.ErrNonceTooLow, next, tx.Nonce())
