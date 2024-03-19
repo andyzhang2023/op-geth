@@ -248,7 +248,7 @@ type ValidationOptionsWithState struct {
 func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, opts *ValidationOptionsWithState) error {
 	// Ensure the transaction adheres to nonce ordering
 	t0 := time.Now()
-	from, err := signer.Sender(tx) // already validated (and cached), but cleaner to check
+	from, err := types.Sender(signer, tx) // already validated (and cached), just use it
 	addValidateSenderDurationTimer.Update(time.Since(t0))
 
 	if err != nil {
