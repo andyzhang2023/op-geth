@@ -796,6 +796,9 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 	}
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer func(t0 time.Time) {
+		addLockedDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 	// already validated by this point
 	from, _ := types.Sender(pool.signer, tx)
 
@@ -1129,11 +1132,7 @@ func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error 
 
 	// Process all the new transaction and merge any errors into the original slice
 	t0 := time.Now()
-	pool.mu.Lock()
-	t1 := time.Now()
 	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
-	addLockedDurationTimer.Update(time.Since(t1))
-	pool.mu.Unlock()
 	addBlockingDurationTimer.Update(time.Since(t0))
 
 	var nilSlot = 0
