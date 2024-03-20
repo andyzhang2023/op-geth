@@ -98,6 +98,19 @@ var (
 	throttleTxMeter = metrics.NewRegisteredMeter("txpool/throttle", nil)
 	// reorgDurationTimer measures how long time a txpool reorg takes.
 	reorgDurationTimer = metrics.NewRegisteredTimer("txpool/reorgtime", nil)
+	// demoteDuration
+	demoteDurationTimer = metrics.NewRegisteredTimer("txpool/demotetime", nil)
+	// truncateDuration
+	truncateDurationTimer = metrics.NewRegisteredTimer("txpool/truncatetime", nil)
+	// reorgWithResetDuration
+	reorgWithResetDurationTimer = metrics.NewRegisteredTimer("txpool/reorgresettime", nil)
+
+	// mutex debug timer
+	reportDurationTimer     = metrics.NewRegisteredTimer("txpool/mutex/report/duration", nil)
+	evitDurationTimer       = metrics.NewRegisteredTimer("txpool/mutex/evit/duration", nil)
+	reannounceDurationTimer = metrics.NewRegisteredTimer("txpool/mutex/reannounce/duration", nil)
+	journalDurationTimer    = metrics.NewRegisteredTimer("txpool/mutex/journal/duration", nil)
+
 	// dropBetweenReorgHistogram counts how many drops we experience between two reorg runs. It is expected
 	// that this number is pretty low, since txpool reorgs happen very frequently.
 	dropBetweenReorgHistogram = metrics.NewRegisteredHistogram("txpool/dropbetweenreorg", nil, metrics.NewExpDecaySample(1028, 0.015))
@@ -393,6 +406,7 @@ func (pool *LegacyPool) loop() {
 
 	// Notify tests that the init phase is done
 	close(pool.initDoneCh)
+	var t0 time.Time
 	for {
 		select {
 		// Handle pool shutdown
@@ -402,7 +416,9 @@ func (pool *LegacyPool) loop() {
 		// Handle stats reporting ticks
 		case <-report.C:
 			pool.mu.RLock()
+			t0 = time.Now()
 			pending, queued := pool.stats()
+			reportDurationTimer.Update(time.Since(t0))
 			pool.mu.RUnlock()
 			stales := int(pool.priced.stales.Load())
 
@@ -414,6 +430,7 @@ func (pool *LegacyPool) loop() {
 		// Handle inactive account transaction eviction
 		case <-evict.C:
 			pool.mu.Lock()
+			t0 = time.Now()
 			for addr := range pool.queue {
 				// Skip local transactions from the eviction mechanism
 				if pool.locals.contains(addr) {
@@ -428,20 +445,24 @@ func (pool *LegacyPool) loop() {
 					queuedEvictionMeter.Mark(int64(len(list)))
 				}
 			}
+			evitDurationTimer.Update(time.Since(t0))
 			pool.mu.Unlock()
 
 		// Handle local transaction journal rotation
 		case <-journal.C:
 			if pool.journal != nil {
 				pool.mu.Lock()
+				t0 = time.Now()
 				if err := pool.journal.rotate(pool.toJournal()); err != nil {
 					log.Warn("Failed to rotate local tx journal", "err", err)
 				}
+				journalDurationTimer.Update(time.Since(t0))
 				pool.mu.Unlock()
 			}
 
 		case <-reannounce.C:
 			pool.mu.RLock()
+			t0 = time.Now()
 			reannoTxs := func() []*types.Transaction {
 				txs := make([]*types.Transaction, 0)
 				for addr, list := range pool.pending {
@@ -462,6 +483,7 @@ func (pool *LegacyPool) loop() {
 				}
 				return txs
 			}()
+			reannounceDurationTimer.Update(time.Since(t0))
 			pool.mu.RUnlock()
 			staledMeter.Mark(int64(len(reannoTxs)))
 			if len(reannoTxs) > 0 {
@@ -1337,6 +1359,9 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
+		if reset != nil {
+			reorgWithResetDurationTimer.Update(time.Since(t0))
+		}
 	}(time.Now())
 	defer close(done)
 
@@ -1372,7 +1397,9 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
+		t0 := time.Now()
 		pool.demoteUnexecutables()
+		demoteDurationTimer.Update(time.Since(t0))
 		var pendingBaseFee = pool.priced.urgent.baseFee
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
@@ -1392,8 +1419,10 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		pool.pendingNonces.setAll(nonces)
 	}
 	// Ensure pool.queue and pool.pending sizes stay within the configured limits.
+	t0 := time.Now()
 	pool.truncatePending()
 	pool.truncateQueue()
+	truncateDurationTimer.Update(time.Since(t0))
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
