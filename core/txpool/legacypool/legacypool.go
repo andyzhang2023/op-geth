@@ -104,6 +104,8 @@ var (
 	truncateDurationTimer = metrics.NewRegisteredTimer("txpool/truncatetime", nil)
 	// reorgWithResetDuration
 	reorgWithResetDurationTimer = metrics.NewRegisteredTimer("txpool/reorgresettime", nil)
+	// reorgWithResetNoBlockingDuration
+	noblockingReorgWithResetDurationTimer = metrics.NewRegisteredTimer("txpool/noblocking/reorgresettime", nil)
 
 	// mutex debug timer
 	reportDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/report/duration", nil)
@@ -1386,6 +1388,9 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
+		if reset != nil {
+			reorgWithResetDurationTimer.Update(time.Since(t0))
+		}
 	}(time.Now())
 	defer close(done)
 
@@ -1452,7 +1457,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
 	if reset != nil {
-		reorgWithResetDurationTimer.Update(time.Since(treset))
+		noblockingReorgWithResetDurationTimer.Update(time.Since(treset))
 	}
 	pool.mu.Unlock()
 
