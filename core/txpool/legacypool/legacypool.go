@@ -106,10 +106,15 @@ var (
 	reorgWithResetDurationTimer = metrics.NewRegisteredTimer("txpool/reorgresettime", nil)
 
 	// mutex debug timer
-	reportDurationTimer     = metrics.NewRegisteredTimer("txpool/mutex/report/duration", nil)
-	evitDurationTimer       = metrics.NewRegisteredTimer("txpool/mutex/evit/duration", nil)
-	reannounceDurationTimer = metrics.NewRegisteredTimer("txpool/mutex/reannounce/duration", nil)
-	journalDurationTimer    = metrics.NewRegisteredTimer("txpool/mutex/journal/duration", nil)
+	reportDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/report/duration", nil)
+	evitDurationTimer        = metrics.NewRegisteredTimer("txpool/mutex/evit/duration", nil)
+	reannounceDurationTimer  = metrics.NewRegisteredTimer("txpool/mutex/reannounce/duration", nil)
+	journalDurationTimer     = metrics.NewRegisteredTimer("txpool/mutex/journal/duration", nil)
+	statusDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/status/duration", nil)
+	contentDurationTimer     = metrics.NewRegisteredTimer("txpool/mutex/content/duration", nil)
+	setgastipDurationTimer   = metrics.NewRegisteredTimer("txpool/mutex/setgastip/duration", nil)
+	nonceDurationTimer       = metrics.NewRegisteredTimer("txpool/mutex/nonce/duration", nil)
+	contentfromDurationTimer = metrics.NewRegisteredTimer("txpool/mutex/contentfrom/duration", nil)
 
 	// dropBetweenReorgHistogram counts how many drops we experience between two reorg runs. It is expected
 	// that this number is pretty low, since txpool reorgs happen very frequently.
@@ -299,8 +304,8 @@ func New(config Config, chain BlockChain) *LegacyPool {
 		chain:           chain,
 		chainconfig:     chain.Config(),
 		signer:          types.LatestSigner(chain.Config()),
-		pending:         make(map[common.Address]*list),
-		queue:           make(map[common.Address]*list),
+		pending:         make(map[common.Address]*list, 2*config.GlobalSlots),
+		queue:           make(map[common.Address]*list, 2*config.GlobalQueue),
 		beats:           make(map[common.Address]time.Time),
 		all:             newLookup(),
 		reqResetCh:      make(chan *txpoolResetRequest),
@@ -534,6 +539,9 @@ func (pool *LegacyPool) SubscribeReannoTxsEvent(ch chan<- core.ReannoTxsEvent) e
 func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer func(t0 time.Time) {
+		setgastipDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 
 	old := pool.gasTip.Load()
 	pool.gasTip.Store(new(big.Int).Set(tip))
@@ -555,6 +563,9 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer func(t0 time.Time) {
+		nonceDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 
 	return pool.pendingNonces.get(addr)
 }
@@ -564,6 +575,9 @@ func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 func (pool *LegacyPool) Stats() (int, int) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer func(t0 time.Time) {
+		statusDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 
 	return pool.stats()
 }
@@ -587,6 +601,9 @@ func (pool *LegacyPool) stats() (int, int) {
 func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[common.Address][]*types.Transaction) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer func(t0 time.Time) {
+		contentDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 
 	pending := make(map[common.Address][]*types.Transaction, len(pool.pending))
 	for addr, list := range pool.pending {
@@ -604,6 +621,9 @@ func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[
 func (pool *LegacyPool) ContentFrom(addr common.Address) ([]*types.Transaction, []*types.Transaction) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer func(t0 time.Time) {
+		contentfromDurationTimer.Update(time.Since(t0))
+	}(time.Now())
 
 	var pending []*types.Transaction
 	if list, ok := pool.pending[addr]; ok {
@@ -1359,9 +1379,6 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
-		if reset != nil {
-			reorgWithResetDurationTimer.Update(time.Since(t0))
-		}
 	}(time.Now())
 	defer close(done)
 
@@ -1373,6 +1390,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 	pool.mu.Lock()
+	treset := time.Now()
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		pool.reset(reset.oldHead, reset.newHead)
@@ -1426,6 +1444,9 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
+	if reset != nil {
+		reorgWithResetDurationTimer.Update(time.Since(treset))
+	}
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
