@@ -723,6 +723,8 @@ func (pool *LegacyPool) validateTx(tx *types.Transaction, local bool) error {
 
 		FirstNonceGap: nil, // Pool allows arbitrary arrival order, don't invalidate nonce gaps
 		UsedAndLeftSlots: func(addr common.Address) (int, int) {
+			pool.mu.RLock()
+			defer pool.mu.RUnlock()
 			var have int
 			if list := pool.pending[addr]; list != nil {
 				have += list.Len()
@@ -733,12 +735,16 @@ func (pool *LegacyPool) validateTx(tx *types.Transaction, local bool) error {
 			return have, math.MaxInt
 		},
 		ExistingExpenditure: func(addr common.Address) *big.Int {
+			pool.mu.RLock()
+			defer pool.mu.RUnlock()
 			if list := pool.pending[addr]; list != nil {
 				return list.totalcost
 			}
 			return new(big.Int)
 		},
 		ExistingCost: func(addr common.Address, nonce uint64) *big.Int {
+			pool.mu.RLock()
+			defer pool.mu.RUnlock()
 			if list := pool.pending[addr]; list != nil {
 				if tx := list.txs.Get(nonce); tx != nil {
 					cost := tx.Cost()
@@ -788,6 +794,8 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		invalidTxMeter.Mark(1)
 		return false, err
 	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
 	// already validated by this point
 	from, _ := types.Sender(pool.signer, tx)
 
@@ -1876,6 +1884,7 @@ func (a addressesByHeartbeat) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 // accountSet is simply a set of addresses to check for existence, and a signer
 // capable of deriving addresses from transactions.
 type accountSet struct {
+	mu       sync.RWMutex
 	accounts map[common.Address]struct{}
 	signer   types.Signer
 	cache    *[]common.Address
@@ -1896,6 +1905,8 @@ func newAccountSet(signer types.Signer, addrs ...common.Address) *accountSet {
 
 // contains checks if a given address is contained within the set.
 func (as *accountSet) contains(addr common.Address) bool {
+	as.mu.RLock()
+	defer as.mu.RUnlock()
 	_, exist := as.accounts[addr]
 	return exist
 }
@@ -1911,6 +1922,8 @@ func (as *accountSet) containsTx(tx *types.Transaction) bool {
 
 // add inserts a new address into the set to track.
 func (as *accountSet) add(addr common.Address) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
 	as.accounts[addr] = struct{}{}
 	as.cache = nil
 }
@@ -1925,6 +1938,8 @@ func (as *accountSet) addTx(tx *types.Transaction) {
 // flatten returns the list of addresses within this set, also caching it for later
 // reuse. The returned slice should not be changed!
 func (as *accountSet) flatten() []common.Address {
+	as.mu.RLock()
+	defer as.mu.RUnlock()
 	if as.cache == nil {
 		accounts := make([]common.Address, 0, len(as.accounts))
 		for account := range as.accounts {
@@ -1937,6 +1952,8 @@ func (as *accountSet) flatten() []common.Address {
 
 // merge adds all addresses from the 'other' set into 'as'.
 func (as *accountSet) merge(other *accountSet) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
 	for addr := range other.accounts {
 		as.accounts[addr] = struct{}{}
 	}
