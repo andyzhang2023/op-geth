@@ -563,8 +563,6 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 // Nonce returns the next nonce of an account, with all transactions executable
 // by the pool already applied on top.
 func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
-	pool.mu.RLock()
-	defer pool.mu.RUnlock()
 	defer func(t0 time.Time) {
 		nonceDurationTimer.Update(time.Since(t0))
 	}(time.Now())

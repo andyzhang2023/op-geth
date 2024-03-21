@@ -29,7 +29,7 @@ import (
 type noncer struct {
 	fallback *state.StateDB
 	nonces   map[common.Address]uint64
-	lock     sync.Mutex
+	lock     sync.RWMutex
 }
 
 // newNoncer creates a new virtual state database to track the pool nonces.
@@ -45,15 +45,19 @@ func newNoncer(statedb *state.StateDB) *noncer {
 func (txn *noncer) get(addr common.Address) uint64 {
 	// We use mutex for get operation is the underlying
 	// state will mutate db even for read access.
-	txn.lock.Lock()
-	defer txn.lock.Unlock()
+	txn.lock.RLock()
+	nonce, ok := txn.nonces[addr]
+	txn.lock.RUnlock()
 
-	if _, ok := txn.nonces[addr]; !ok {
+	if !ok {
+		// GetNonce is so heavy that we don't want to hold the lock while calling it.
 		if nonce := txn.fallback.GetNonce(addr); nonce != 0 {
+			txn.lock.Lock()
 			txn.nonces[addr] = nonce
+			txn.lock.Unlock()
 		}
 	}
-	return txn.nonces[addr]
+	return nonce
 }
 
 // set inserts a new virtual nonce into the virtual state database to be returned
@@ -68,18 +72,13 @@ func (txn *noncer) set(addr common.Address, nonce uint64) {
 // setIfLower updates a new virtual nonce into the virtual state database if the
 // new one is lower.
 func (txn *noncer) setIfLower(addr common.Address, nonce uint64) {
-	txn.lock.Lock()
-	defer txn.lock.Unlock()
-
-	if _, ok := txn.nonces[addr]; !ok {
-		if nonce := txn.fallback.GetNonce(addr); nonce != 0 {
-			txn.nonces[addr] = nonce
-		}
-	}
-	if txn.nonces[addr] <= nonce {
+	currNonce := txn.get(addr)
+	if currNonce <= nonce {
 		return
 	}
+	txn.lock.Lock()
 	txn.nonces[addr] = nonce
+	txn.lock.Unlock()
 }
 
 // setAll sets the nonces for all accounts to the given map.
