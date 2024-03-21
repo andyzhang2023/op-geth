@@ -67,6 +67,7 @@ type StateDB struct {
 	hasher     crypto.KeccakState
 	snaps      *snapshot.Tree    // Nil if snapshot is not available
 	snap       snapshot.Snapshot // Nil if snapshot is not available
+	snapLock   sync.Mutex        // make the snap account multi-thread safe
 
 	// originalRoot is the pre-state root, before any changes were made.
 	// It will be updated when the Commit is called.
@@ -572,7 +573,11 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	var data *types.StateAccount
 	if s.snap != nil {
 		start := time.Now()
-		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+		// hasher need to be locked for multi-thread safe.
+		s.snapLock.Lock()
+		addrHash := crypto.HashData(s.hasher, addr.Bytes())
+		s.snapLock.Unlock()
+		acc, err := s.snap.Account(addrHash)
 		if metrics.EnabledExpensive {
 			s.SnapshotAccountReads += time.Since(start)
 		}
