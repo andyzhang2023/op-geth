@@ -758,7 +758,14 @@ func (pool *LegacyPool) validateTx(tx *types.Transaction, local bool) error {
 			}
 			return nil
 		},
-		L1CostFn: pool.l1CostFn,
+		L1CostFn: func(dataGas types.RollupGasData) *big.Int {
+			pool.mu.Lock()
+			defer pool.mu.Unlock()
+			if pool.l1CostFn != nil {
+				return pool.l1CostFn(dataGas)
+			}
+			return nil
+		},
 	}
 	if err := txpool.ValidateTransactionWithState(tx, pool.signer, opts); err != nil {
 		return err
