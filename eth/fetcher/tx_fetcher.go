@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	mrand "math/rand"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -197,6 +198,9 @@ type TxFetcher struct {
 	step  chan struct{} // Notification channel when the fetcher loop iterates
 	clock mclock.Clock  // Time wrapper to simulate in tests
 	rand  *mrand.Rand   // Randomizer to use in tests instead of map range loops (soft-random)
+
+	// Parallel processor
+	processor *processor
 }
 
 // NewTxFetcher creates a transaction fetcher to retrieve transaction
@@ -210,6 +214,8 @@ func NewTxFetcher(hasTx func(common.Hash) bool, addTxs func([]*types.Transaction
 func NewTxFetcherForTests(
 	hasTx func(common.Hash) bool, addTxs func([]*types.Transaction) []error, fetchTxs func(string, []common.Hash) error, dropPeer func(string),
 	clock mclock.Clock, rand *mrand.Rand) *TxFetcher {
+	processor := newProcessor()
+	processor.Start()
 	return &TxFetcher{
 		notify:      make(chan *txAnnounce),
 		cleanup:     make(chan *txDelivery),
@@ -230,6 +236,7 @@ func NewTxFetcherForTests(
 		dropPeer:    dropPeer,
 		clock:       clock,
 		rand:        rand,
+		processor:   processor,
 	}
 }
 
@@ -293,11 +300,11 @@ func (f *TxFetcher) isKnownUnderpriced(hash common.Hash) bool {
 	return ok
 }
 
-// Enqueue imports a batch of received transaction into the transaction pool
+// enqueue imports a batch of received transaction into the transaction pool
 // and the fetcher. This method may be called by both transaction broadcasts and
 // direct request replies. The differentiation is important so the fetcher can
 // re-schedule missing transactions as soon as possible.
-func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) error {
+func (f *TxFetcher) enqueue(peer string, txs []*types.Transaction, direct bool) error {
 	var (
 		inMeter          = txReplyInMeter
 		knownMeter       = txReplyKnownMeter
@@ -365,7 +372,8 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 
 		// If 'other reject' is >25% of the deliveries in any batch, sleep a bit.
 		if otherreject > 128/4 {
-			time.Sleep(200 * time.Millisecond)
+			//TODO should we sleep here?
+			//time.Sleep(200 * time.Millisecond)
 			log.Warn("Peer delivering stale transactions", "peer", peer, "rejected", otherreject)
 		}
 	}
@@ -375,6 +383,13 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 	case <-f.quit:
 		return errTerminated
 	}
+}
+
+// Enqueue run enqueue in a parallel way.
+func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) error {
+	return f.processor.Do(func() error {
+		return f.enqueue(peer, txs, direct)
+	})
 }
 
 // Drop should be called when a peer disconnects. It cleans up all the internal
@@ -1022,4 +1037,54 @@ func joinHashes(hashes []common.Hash) string {
 		}
 	}
 	return strings.Join(strs, ",")
+}
+
+type processor struct {
+	tasks chan *task
+	stop  chan struct{}
+}
+
+type task struct {
+	err     chan error
+	handler func() error
+}
+
+func newProcessor() *processor {
+	return &processor{
+		tasks: make(chan *task),
+		stop:  make(chan struct{}),
+	}
+}
+
+func (p *processor) loop(processorNum int) {
+	for i := 0; i < processorNum; i++ {
+		go func() {
+			for {
+				select {
+				case task := <-p.tasks:
+					task.err <- task.handler()
+
+				case <-p.stop:
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (p *processor) Start() {
+	go p.loop(runtime.NumCPU())
+}
+
+func (p *processor) Stop() {
+	close(p.stop)
+}
+
+func (p *processor) Do(handler func() error) error {
+	done := make(chan error, 1)
+	p.tasks <- &task{
+		err:     done,
+		handler: handler,
+	}
+	return <-done
 }
