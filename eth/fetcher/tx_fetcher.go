@@ -1051,7 +1051,7 @@ type task struct {
 
 func newProcessor() *processor {
 	return &processor{
-		tasks: make(chan *task),
+		tasks: make(chan *task, 4096), // we need a buffer to handle the throughput peak.
 		stop:  make(chan struct{}),
 	}
 }
