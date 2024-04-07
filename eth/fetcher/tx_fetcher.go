@@ -1073,7 +1073,11 @@ func (p *processor) loop(processorNum int) {
 }
 
 func (p *processor) Start() {
-	go p.loop(runtime.NumCPU())
+	procNum := 16
+	if runtime.NumCPU() > procNum {
+		procNum = runtime.NumCPU()
+	}
+	go p.loop(procNum)
 }
 
 func (p *processor) Stop() {
