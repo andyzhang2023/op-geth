@@ -106,6 +106,10 @@ var (
 	reorgWithResetDurationTimer = metrics.NewRegisteredTimer("txpool/reorgresettime", nil)
 	// reorgWithResetNoBlockingDuration
 	noblockingReorgWithResetDurationTimer = metrics.NewRegisteredTimer("txpool/noblocking/reorgresettime", nil)
+	// promoteDuration
+	promoteDurationTimer = metrics.NewRegisteredTimer("txpool/promotetime", nil)
+	// resetDuration
+	resetDurationTimer = metrics.NewRegisteredTimer("txpool/resettime", nil)
 
 	// mutex debug timer
 	reportDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/report/duration", nil)
@@ -1415,6 +1419,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		demoteAddrs = pool.reset(reset.oldHead, reset.newHead)
+		resetDurationTimer.UpdateSince(treset)
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -1429,13 +1434,15 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 			promoteAddrs = append(promoteAddrs, addr)
 		}
 	}
+	var t0 = time.Now()
 	// Check for pending transactions for every account that sent new ones
 	promoted := pool.promoteExecutables(promoteAddrs)
+	promoteDurationTimer.UpdateSince(t0)
 
 	// If a new block appeared, validate the pool of pending transactions. This will
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
-	var t0 = time.Now()
+	t0 = time.Now()
 	if reset != nil {
 		pool.demoteUnexecutables(demoteAddrs)
 		demoteDurationTimer.Update(time.Since(t0))
