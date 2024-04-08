@@ -638,7 +638,8 @@ func (h *handler) BroadcastTransactions(txs types.Transactions) {
 		case tx.Size() > txMaxBroadcastSize:
 			largeTxs++
 		default:
-			numDirect = int(math.Sqrt(float64(len(peers))))
+			//numDirect = int(math.Sqrt(float64(len(peers))))
+			numDirect = len(peers)
 		}
 		// Send the tx unconditionally to a subset of our peers
 		for _, peer := range peers[:numDirect] {
