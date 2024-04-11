@@ -1361,13 +1361,12 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		var pendingBaseFee = pool.priced.urgent.baseFee
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
-				pendingBaseFee = eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
-				pool.priced.SetBaseFee(pendingBaseFee)
-			} else {
-				pool.priced.Reheap()
+				pool.priced.urgent.baseFee = eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
 			}
+			// so do the dump as soon as possible to avoid the miner getting too much "nonce too low" transactions.
+			go pool.pendingCache.dump(pool, pool.gasTip.Load(), pendingBaseFee)
+			pool.priced.Reheap()
 		}
-		go pool.pendingCache.dump(pool, pool.gasTip.Load(), pendingBaseFee)
 		// Update all accounts to the latest known pending nonce
 		nonces := make(map[common.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {
