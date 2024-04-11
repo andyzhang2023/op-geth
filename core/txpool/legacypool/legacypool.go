@@ -1324,6 +1324,10 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		reorgDurationTimer.Update(time.Since(t0))
 	}(time.Now())
 	defer close(done)
+	// let the miner worker wait a monent until demotion is done.
+	if reset != nil {
+		pool.pendingCache.waitForDemote.Lock()
+	}
 
 	var promoteAddrs []common.Address
 	if dirtyAccounts != nil && reset == nil {
@@ -1365,7 +1369,11 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 			}
 			// so do the dump as soon as possible to avoid the miner getting too much "nonce too low" transactions.
 			go pool.pendingCache.dump(pool, pool.gasTip.Load(), pendingBaseFee)
+			pool.pendingCache.waitForDemote.Unlock()
+
 			pool.priced.Reheap()
+		} else {
+			pool.pendingCache.waitForDemote.Unlock()
 		}
 		// Update all accounts to the latest known pending nonce
 		nonces := make(map[common.Address]uint64, len(pool.pending))
@@ -1375,6 +1383,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		}
 		pool.pendingNonces.setAll(nonces)
 	}
+
 	// Ensure pool.queue and pool.pending sizes stay within the configured limits.
 	pool.truncatePending()
 	pool.truncateQueue()

@@ -25,6 +25,11 @@ type cacheForMiner struct {
 	pendingWithoutTips atomic.Value
 	pendingWithTips    atomic.Value
 	addrLock           sync.Mutex
+
+	// waitForPromote is used to reduce the "nonce too low" transactions in the pending list.
+	// we use mutex instead of channel to avoid potential too much waiting time when txpool is
+	// too busy to send the signal
+	waitForDemote sync.Mutex
 }
 
 func newCacheForMiner() *cacheForMiner {
@@ -133,6 +138,8 @@ func (pc *cacheForMiner) dump(pool txpool.LazyResolver, gasPrice, baseFee *big.I
 }
 
 func (pc *cacheForMiner) pendingTxs(enforceTips bool) map[common.Address][]*txpool.LazyTransaction {
+	pc.waitForDemote.Lock()
+	defer pc.waitForDemote.Unlock()
 	if enforceTips {
 		return pc.pendingWithTips.Load().(map[common.Address][]*txpool.LazyTransaction)
 	} else {
