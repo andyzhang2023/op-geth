@@ -244,6 +244,11 @@ type worker struct {
 	skipSealHook func(*task) bool                   // Method to decide whether skipping the sealing.
 	fullTaskHook func()                             // Method to call before pushing the full sealing task.
 	resubmitHook func(time.Duration, time.Duration) // Method to call upon updating resubmitting interval.
+
+	// transactions commited successfully
+	txsAlreadyCommited map[common.Hash]bool
+	// transactions already commited
+	txsCommitedSucc map[common.Hash]bool
 }
 
 func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus.Engine, eth Backend, mux *event.TypeMux, isLocalBlock func(header *types.Header) bool, init bool) *worker {
@@ -889,6 +894,12 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 			txs.Pop()
 			continue
 		}
+		// Transaction already commited last block
+		if w.txsAlreadyCommited != nil && w.txsAlreadyCommited[ltx.Hash] {
+			log.Trace("transaction already commited", "hash", ltx.Hash, "left", env.gasPool.Gas(), "needed", ltx.Gas)
+			txs.Shift()
+			continue
+		}
 		// Error may be ignored here. The error has already been checked
 		// during transaction acceptance is the transaction pool.
 		from, _ := types.Sender(env.signer, tx)
@@ -914,6 +925,10 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 			// Everything ok, collect the logs and shift in the next transaction from the same account
 			coalescedLogs = append(coalescedLogs, logs...)
 			env.tcount++
+			// record it to avoid double commit
+			if w.txsCommitedSucc != nil {
+				w.txsCommitedSucc[tx.Hash()] = true
+			}
 			txs.Shift()
 
 		default:
@@ -1103,6 +1118,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	// 	}
 	// }
 
+	w.txsCommitedSucc = make(map[common.Hash]bool)
 	// Fill the block with all available pending transactions.
 	if len(localTxs) > 0 {
 		txs := newTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
@@ -1116,6 +1132,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 			return err
 		}
 	}
+	w.txsAlreadyCommited, w.txsCommitedSucc = w.txsCommitedSucc, nil
 	return nil
 }
 
