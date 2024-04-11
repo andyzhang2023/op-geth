@@ -895,8 +895,8 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 			continue
 		}
 		// Transaction already commited last block
-		if w.txsAlreadyCommited != nil && w.txsAlreadyCommited[ltx.Hash] {
-			log.Trace("transaction already commited", "hash", ltx.Hash, "left", env.gasPool.Gas(), "needed", ltx.Gas)
+		if w.txsAlreadyCommited != nil && w.txsAlreadyCommited[tx.Hash()] {
+			log.Trace("transaction already commited", "hash", tx.Hash().Hex(), "left", env.gasPool.Gas(), "needed", tx.Gas)
 			txs.Shift()
 			continue
 		}
