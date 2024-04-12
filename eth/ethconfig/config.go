@@ -183,6 +183,9 @@ type Config struct {
 	RollupDisableTxPoolGossip               bool
 	RollupDisableTxPoolAdmission            bool
 	RollupHaltOnIncompatibleProtocolVersion string
+
+	// broadcast new transactions without announcment
+	NoAnnounce bool
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain config.

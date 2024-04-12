@@ -312,6 +312,11 @@ var (
 		Value:    ethconfig.Defaults.TransactionHistory,
 		Category: flags.StateCategory,
 	}
+	NoAnnounceFlag = &cli.BoolFlag{
+		Name:     "noannounce",
+		Usage:    "disable transaction announcement",
+		Category: flags.EthCategory,
+	}
 	// Light server and client settings
 	LightServeFlag = &cli.IntFlag{
 		Name:     "light.serve",
