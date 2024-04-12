@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -61,10 +62,12 @@ type revision struct {
 type StateDB struct {
 	db         Database
 	prefetcher *triePrefetcher
+	trieLock   sync.Mutex // make the trie tree multi-thread safe
 	trie       Trie
 	hasher     crypto.KeccakState
 	snaps      *snapshot.Tree    // Nil if snapshot is not available
 	snap       snapshot.Snapshot // Nil if snapshot is not available
+	snapLock   sync.Mutex        // make the snap account multi-thread safe
 
 	// originalRoot is the pre-state root, before any changes were made.
 	// It will be updated when the Commit is called.
@@ -79,6 +82,7 @@ type StateDB struct {
 
 	// This map holds 'live' objects, which will get modified while processing
 	// a state transition.
+	stateObjectsLock     sync.RWMutex // make the stateObjects multi-thread safe when read by getDeletedStateObject
 	stateObjects         map[common.Address]*stateObject
 	stateObjectsPending  map[common.Address]struct{}            // State objects finalized but not yet written to the trie
 	stateObjectsDirty    map[common.Address]struct{}            // State objects modified in the current execution
@@ -559,14 +563,21 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 // destructed object instead of wiping all knowledge about the state object.
 func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	// Prefer live objects if any is available
+	s.stateObjectsLock.RLock()
 	if obj := s.stateObjects[addr]; obj != nil {
+		s.stateObjectsLock.RUnlock()
 		return obj
 	}
+	s.stateObjectsLock.RUnlock()
 	// If no live objects are available, attempt to use snapshots
 	var data *types.StateAccount
 	if s.snap != nil {
 		start := time.Now()
-		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+		// hasher need to be locked for multi-thread safe.
+		s.snapLock.Lock()
+		addrHash := crypto.HashData(s.hasher, addr.Bytes())
+		s.snapLock.Unlock()
+		acc, err := s.snap.Account(addrHash)
 		if metrics.EnabledExpensive {
 			s.SnapshotAccountReads += time.Since(start)
 		}
@@ -592,7 +603,11 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	if data == nil {
 		start := time.Now()
 		var err error
+		// some cache info (StateTrie.Trie.tracer.accountList) might be updated during GetAccount procedure, so we
+		// lock it for multi-thread safe.
+		s.trieLock.Lock()
 		data, err = s.trie.GetAccount(addr)
+		s.trieLock.Unlock()
 		if metrics.EnabledExpensive {
 			s.AccountReads += time.Since(start)
 		}
@@ -611,6 +626,8 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 }
 
 func (s *StateDB) setStateObject(object *stateObject) {
+	s.stateObjectsLock.Lock()
+	defer s.stateObjectsLock.Unlock()
 	s.stateObjects[object.Address()] = object
 }
 
