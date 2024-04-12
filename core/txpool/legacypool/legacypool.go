@@ -112,8 +112,9 @@ var (
 	staledMeter = metrics.NewRegisteredMeter("txpool/staled/count", nil) // staled transactions
 
 	// metrics to measure the performance of Add() function
-	addTxMeter       = metrics.NewRegisteredMeter("txpool/add/txs", nil)
-	addDurationTimer = metrics.NewRegisteredTimer("txpool/add/duration", nil)
+	addTxMeter             = metrics.NewRegisteredMeter("txpool/add/txs", nil)
+	addDurationTimer       = metrics.NewRegisteredTimer("txpool/addtime", nil)
+	addLockedDurationTimer = metrics.NewRegisteredTimer("txpool/locked/addtime", nil)
 
 	//metrics to measure the performance of runReorg() function
 	resetDurationTimer                    = metrics.NewRegisteredTimer("txpool/resettime", nil)
@@ -1100,7 +1101,9 @@ func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error 
 
 	// Process all the new transaction and merge any errors into the original slice
 	pool.mu.Lock()
+	t0 := time.Now()
 	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
+	addLockedDurationTimer.UpdateSince(t0)
 	pool.mu.Unlock()
 
 	var nilSlot = 0
