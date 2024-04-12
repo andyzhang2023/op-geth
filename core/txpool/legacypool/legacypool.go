@@ -110,6 +110,19 @@ var (
 	reheapTimer = metrics.NewRegisteredTimer("txpool/reheap", nil)
 
 	staledMeter = metrics.NewRegisteredMeter("txpool/staled/count", nil) // staled transactions
+
+	// metrics to measure the performance of Add() function
+	addTxMeter       = metrics.NewRegisteredMeter("txpool/add/txs", nil)
+	addDurationTimer = metrics.NewRegisteredTimer("txpool/add/duration", nil)
+
+	//metrics to measure the performance of runReorg() function
+	resetDurationTimer                    = metrics.NewRegisteredTimer("txpool/resettime", nil)
+	demoteDurationTimer                   = metrics.NewRegisteredTimer("txpool/demotetime", nil)
+	promoteDurationTimer                  = metrics.NewRegisteredTimer("txpool/promotetime", nil)
+	queueTruncateDurationTimer            = metrics.NewRegisteredTimer("txpool/queue/truncatetime", nil)
+	pendingTruncateDurationTimer          = metrics.NewRegisteredTimer("txpool/pending/truncatetime", nil)
+	reorgWithResetDurationTimer           = metrics.NewRegisteredTimer("txpool/reorgresettime", nil)
+	noBlockingReorgWithResetDurationTimer = metrics.NewRegisteredTimer("txpool/noblocking/reorgresettime", nil)
 )
 
 // BlockChain defines the minimal set of methods needed to back a tx pool with
@@ -1051,6 +1064,10 @@ func (pool *LegacyPool) addRemoteSync(tx *types.Transaction) error {
 // If sync is set, the method will block until all internal maintenance related
 // to the add is finished. Only use this during tests for determinism!
 func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error {
+	defer func(t0 time.Time) {
+		addDurationTimer.UpdateSince(t0)
+		addTxMeter.Mark(int64(len(txs)))
+	}(time.Now())
 	// Do not treat as local if local transactions have been disabled
 	local = local && !pool.config.NoLocals
 
@@ -1336,6 +1353,9 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
+		if reset != nil {
+			reorgWithResetDurationTimer.UpdateSince(t0)
+		}
 	}(time.Now())
 	defer close(done)
 
@@ -1347,9 +1367,11 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 	pool.mu.Lock()
+	var t0, tr = time.Now(), time.Now()
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		pool.reset(reset.oldHead, reset.newHead)
+		resetDurationTimer.UpdateSince(t0)
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -1364,14 +1386,18 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 			promoteAddrs = append(promoteAddrs, addr)
 		}
 	}
+	t0 = time.Now()
 	// Check for pending transactions for every account that sent new ones
 	promoted := pool.promoteExecutables(promoteAddrs)
+	promoteDurationTimer.UpdateSince(t0)
 
 	// If a new block appeared, validate the pool of pending transactions. This will
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
+		t0 = time.Now()
 		pool.demoteUnexecutables()
+		demoteDurationTimer.UpdateSince(t0)
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
 				pendingBaseFee := eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
@@ -1389,11 +1415,18 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		pool.pendingNonces.setAll(nonces)
 	}
 	// Ensure pool.queue and pool.pending sizes stay within the configured limits.
+	t0 = time.Now()
 	pool.truncatePending()
+	pendingTruncateDurationTimer.UpdateSince(t0)
+	t0 = time.Now()
 	pool.truncateQueue()
+	queueTruncateDurationTimer.UpdateSince(t0)
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
+	if reset != nil {
+		noBlockingReorgWithResetDurationTimer.UpdateSince(tr)
+	}
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
