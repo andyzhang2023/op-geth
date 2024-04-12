@@ -98,6 +98,7 @@ type handlerConfig struct {
 	EventMux       *event.TypeMux         // Legacy event mux, deprecate for `feed`
 	RequiredBlocks map[uint64]common.Hash // Hard coded map of required block hashes for sync challenges
 	NoTxGossip     bool                   // Disable P2P transaction gossip
+	NoAnnounce     bool                   // Disable transaction announcements
 }
 
 type handler struct {
@@ -137,6 +138,8 @@ type handler struct {
 
 	handlerStartCh chan struct{}
 	handlerDoneCh  chan struct{}
+
+	noAnnounce bool //broadcast transactions without announcement
 }
 
 // newHandler returns a handler for all Ethereum chain management protocol.
@@ -159,6 +162,7 @@ func newHandler(config *handlerConfig) (*handler, error) {
 		quitSync:       make(chan struct{}),
 		handlerDoneCh:  make(chan struct{}),
 		handlerStartCh: make(chan struct{}),
+		noAnnounce:     config.NoAnnounce,
 	}
 	if config.Sync == downloader.FullSync {
 		// The database seems empty as the current block is the genesis. Yet the snap
@@ -638,7 +642,11 @@ func (h *handler) BroadcastTransactions(txs types.Transactions) {
 		case tx.Size() > txMaxBroadcastSize:
 			largeTxs++
 		default:
-			numDirect = int(math.Sqrt(float64(len(peers))))
+			if h.noAnnounce {
+				numDirect = len(peers)
+			} else {
+				numDirect = int(math.Sqrt(float64(len(peers))))
+			}
 		}
 		// Send the tx unconditionally to a subset of our peers
 		for _, peer := range peers[:numDirect] {
@@ -668,7 +676,7 @@ func (h *handler) BroadcastTransactions(txs types.Transactions) {
 		)
 	}
 	log.Debug("Distributed transactions", "plaintxs", len(txs)-blobTxs-largeTxs, "blobtxs", blobTxs, "largetxs", largeTxs,
-		"bcastpeers", directPeers, "bcastcount", directCount, "annpeers", annPeers, "anncount", annCount)
+		"bcastpeers", directPeers, "bcastcount", directCount, "annpeers", annPeers, "anncount", annCount, "noannounce", h.noAnnounce)
 }
 
 // ReannounceTransactions will announce a batch of pending transactions

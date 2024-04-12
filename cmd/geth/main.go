@@ -128,6 +128,7 @@ var (
 		utils.MinerRecommitIntervalFlag,
 		utils.MinerNewPayloadTimeout,
 		utils.NATFlag,
+		utils.NoAnnounceFlag,
 		utils.NoDiscoverFlag,
 		utils.DiscoveryV4Flag,
 		utils.DiscoveryV5Flag,
