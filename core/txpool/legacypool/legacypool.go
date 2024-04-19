@@ -73,6 +73,17 @@ var (
 )
 
 var (
+	// Metrics for mutex lock
+	evitDurationTimer        = metrics.NewRegisteredTimer("txpool/mutex/evit/duration", nil)
+	journalDurationTimer     = metrics.NewRegisteredTimer("txpool/mutex/journal/duration", nil)
+	reannounceDurationTimer  = metrics.NewRegisteredTimer("txpool/mutex/reannounce/duration", nil)
+	reportDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/report/duration", nil)
+	statusDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/status/duration", nil)
+	contentDurationTimer     = metrics.NewRegisteredTimer("txpool/mutex/content/duration", nil)
+	contentfromDurationTimer = metrics.NewRegisteredTimer("txpool/mutex/contentfrom/duration", nil)
+	setgastipDurationTimer   = metrics.NewRegisteredTimer("txpool/mutex/setgastip/duration", nil)
+	nonceDurationTimer       = metrics.NewRegisteredTimer("txpool/mutex/nonce/duration", nil)
+
 	// Metrics for the pending pool
 	pendingDiscardMeter   = metrics.NewRegisteredMeter("txpool/pending/discard", nil)
 	pendingReplaceMeter   = metrics.NewRegisteredMeter("txpool/pending/replace", nil)
@@ -413,7 +424,9 @@ func (pool *LegacyPool) loop() {
 		// Handle stats reporting ticks
 		case <-report.C:
 			pool.mu.RLock()
+			t0 := time.Now()
 			pending, queued := pool.stats()
+			reportDurationTimer.UpdateSince(t0)
 			pool.mu.RUnlock()
 			stales := int(pool.priced.stales.Load())
 
@@ -425,6 +438,7 @@ func (pool *LegacyPool) loop() {
 		// Handle inactive account transaction eviction
 		case <-evict.C:
 			pool.mu.Lock()
+			t0 := time.Now()
 			for addr := range pool.queue {
 				// Skip local transactions from the eviction mechanism
 				if pool.locals.contains(addr) {
@@ -439,20 +453,24 @@ func (pool *LegacyPool) loop() {
 					queuedEvictionMeter.Mark(int64(len(list)))
 				}
 			}
+			evitDurationTimer.UpdateSince(t0)
 			pool.mu.Unlock()
 
 		// Handle local transaction journal rotation
 		case <-journal.C:
 			if pool.journal != nil {
 				pool.mu.Lock()
+				t0 := time.Now()
 				if err := pool.journal.rotate(pool.toJournal()); err != nil {
 					log.Warn("Failed to rotate local tx journal", "err", err)
 				}
+				journalDurationTimer.UpdateSince(t0)
 				pool.mu.Unlock()
 			}
 
 		case <-reannounce.C:
 			pool.mu.RLock()
+			t0 := time.Now()
 			reannoTxs := func() []*types.Transaction {
 				txs := make([]*types.Transaction, 0)
 				for addr, list := range pool.pending {
@@ -473,6 +491,7 @@ func (pool *LegacyPool) loop() {
 				}
 				return txs
 			}()
+			reannounceDurationTimer.UpdateSince(t0)
 			pool.mu.RUnlock()
 			staledMeter.Mark(int64(len(reannoTxs)))
 			if len(reannoTxs) > 0 {
@@ -523,6 +542,7 @@ func (pool *LegacyPool) SubscribeReannoTxsEvent(ch chan<- core.ReannoTxsEvent) e
 func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer setgastipDurationTimer.UpdateSince(time.Now())
 
 	old := pool.gasTip.Load()
 	pool.gasTip.Store(new(big.Int).Set(tip))
@@ -544,6 +564,7 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer nonceDurationTimer.UpdateSince(time.Now())
 
 	return pool.pendingNonces.get(addr)
 }
@@ -553,6 +574,7 @@ func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 func (pool *LegacyPool) Stats() (int, int) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer statusDurationTimer.UpdateSince(time.Now())
 
 	return pool.stats()
 }
@@ -576,6 +598,7 @@ func (pool *LegacyPool) stats() (int, int) {
 func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[common.Address][]*types.Transaction) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer contentDurationTimer.UpdateSince(time.Now())
 
 	pending := make(map[common.Address][]*types.Transaction, len(pool.pending))
 	for addr, list := range pool.pending {
@@ -593,6 +616,7 @@ func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[
 func (pool *LegacyPool) ContentFrom(addr common.Address) ([]*types.Transaction, []*types.Transaction) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer contentfromDurationTimer.UpdateSince(time.Now())
 
 	var pending []*types.Transaction
 	if list, ok := pool.pending[addr]; ok {
