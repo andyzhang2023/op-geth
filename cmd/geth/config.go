@@ -185,6 +185,10 @@ func makeFullNode(ctx *cli.Context) (*node.Node, ethapi.Backend) {
 		cfg.Eth.OverrideVerkle = &v
 	}
 
+	if ctx.IsSet(utils.NoAnnounceFlag.Name) {
+		cfg.Eth.NoAnnounce = ctx.Bool(utils.NoAnnounceFlag.Name)
+	}
+
 	backend, eth := utils.RegisterEthService(stack, &cfg.Eth)
 
 	// Create gauge with geth system and build information
