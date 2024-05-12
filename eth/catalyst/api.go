@@ -227,9 +227,34 @@ func checkAttribute(active func(*big.Int, uint64) bool, exists bool, block *big.
 	return nil
 }
 
-func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes) (engine.ForkChoiceResponse, error) {
+func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes) (resp engine.ForkChoiceResponse, err error) {
+	var duration time.Duration
+	var pid engine.PayloadID
+	var validationError string
+	defer func(t0 time.Time) {
+		if resp.PayloadStatus.ValidationError != nil {
+			validationError = *resp.PayloadStatus.ValidationError
+		}
+		if resp.PayloadID != nil {
+			pid = *resp.PayloadID
+		}
+		log.Debug("(empty block) Engine API request received",
+			"method", "ForkchoiceUpdated",
+			"duration", time.Since(t0),
+			"head", update.HeadBlockHash,
+			"finalized", update.FinalizedBlockHash,
+			"pid", pid,
+			"lastValidHash", resp.PayloadStatus.LatestValidHash,
+			"validateError", validationError,
+			"noblock", duration,
+			"error", err,
+		)
+	}(time.Now())
 	api.forkchoiceLock.Lock()
 	defer api.forkchoiceLock.Unlock()
+	defer func(t time.Time) {
+		duration = time.Since(t)
+	}(time.Now())
 
 	log.Trace("Engine API request received", "method", "ForkchoiceUpdated", "head", update.HeadBlockHash, "finalized", update.FinalizedBlockHash, "safe", update.SafeBlockHash)
 	if update.HeadBlockHash == (common.Hash{}) {
@@ -452,7 +477,28 @@ func (api *ConsensusAPI) GetPayloadV3(payloadID engine.PayloadID) (*engine.Execu
 	return api.getPayload(payloadID, false)
 }
 
-func (api *ConsensusAPI) getPayload(payloadID engine.PayloadID, full bool) (*engine.ExecutionPayloadEnvelope, error) {
+func (api *ConsensusAPI) getPayload(payloadID engine.PayloadID, full bool) (pl *engine.ExecutionPayloadEnvelope, err error) {
+	defer func(t0 time.Time) {
+		var number uint64
+		var hash, parentHash common.Hash
+		var txs int
+		if pl != nil && pl.ExecutionPayload != nil {
+			number = pl.ExecutionPayload.Number
+			hash = pl.ExecutionPayload.BlockHash
+			parentHash = pl.ExecutionPayload.ParentHash
+			txs = len(pl.ExecutionPayload.Transactions)
+		}
+		log.Debug("(empty block) Engine API request received",
+			"method", "GetPayload",
+			"pid", payloadID,
+			"duration", time.Since(t0),
+			"number", number,
+			"hash", hash,
+			"txs", txs,
+			"parent", parentHash,
+			"error", err,
+		)
+	}(time.Now())
 	log.Trace("Engine API request received", "method", "GetPayload", "id", payloadID)
 	data := api.localBlocks.get(payloadID, full)
 	if data == nil {
@@ -506,7 +552,19 @@ func (api *ConsensusAPI) NewPayloadV3(params engine.ExecutableData, versionedHas
 	return api.newPayload(params, versionedHashes, beaconRoot)
 }
 
-func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashes []common.Hash, beaconRoot *common.Hash) (engine.PayloadStatusV1, error) {
+func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashes []common.Hash, beaconRoot *common.Hash) (stat engine.PayloadStatusV1, err error) {
+	var duration time.Duration
+	defer func(t time.Time) {
+		log.Debug("(empty block) Engine API request received",
+			"method", "NewPayload",
+			"number", params.Number,
+			"hash", params.BlockHash,
+			"parentHash", params.ParentHash,
+			"txs", len(params.Transactions),
+			"duration", time.Since(t),
+			"noblock", duration,
+			"error", err)
+	}(time.Now())
 	// The locking here is, strictly, not required. Without these locks, this can happen:
 	//
 	// 1. NewPayload( execdata-N ) is invoked from the CL. It goes all the way down to
@@ -522,6 +580,9 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 	// check whether we already have the block locally.
 	api.newPayloadLock.Lock()
 	defer api.newPayloadLock.Unlock()
+	defer func(t time.Time) {
+		duration = time.Since(t)
+	}(time.Now())
 
 	log.Trace("Engine API request received", "method", "NewPayload", "number", params.Number, "hash", params.BlockHash)
 	block, err := engine.ExecutableDataToBlock(params, versionedHashes, beaconRoot)
