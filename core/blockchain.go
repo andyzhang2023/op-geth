@@ -1627,12 +1627,15 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 // completes, then the historic state could be pruned again
 func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error) {
 	// If the chain is terminating, don't even bother starting up.
+	t0 := time.Now()
 	if bc.insertStopped() {
+		log.Debug("(empty block) Recovered senders stopped", "number", chain[0].NumberU64(), "duration", time.Since(t0))
 		return 0, nil
 	}
 
 	// Start a parallel signature recovery (signer will fluke on fork transition, minimal perf loss)
 	SenderCacher.RecoverFromBlocks(types.MakeSigner(bc.chainConfig, chain[0].Number(), chain[0].Time()), chain)
+	log.Debug("(empty block) Recovered senders", "number", chain[0].NumberU64(), "duration", time.Since(t0))
 
 	var (
 		stats     = insertStats{startTime: mclock.Now()}
@@ -1640,9 +1643,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 	)
 	// Fire a single chain head event if we've progressed the chain
 	defer func() {
+		t0 = time.Now()
 		if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
 			bc.chainHeadFeed.Send(ChainHeadEvent{lastCanon})
 		}
+		log.Debug("(empty block) chain head fee", "number", chain[0].NumberU64(), "duration", time.Since(t0))
 	}()
 	// Start the parallel header verifier
 	headers := make([]*types.Header, len(chain))
