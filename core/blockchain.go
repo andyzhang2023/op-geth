@@ -1627,15 +1627,58 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 // completes, then the historic state could be pruned again
 func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error) {
 	// If the chain is terminating, don't even bother starting up.
-	t0 := time.Now()
+	var dSenderCache time.Duration
+	var dChainHeadFeed time.Duration
+	var dBlockWrite, dBlockInsert time.Duration
+	// validate duration
+	var dBlockValidate time.Duration
+	var dTrieAccountHash, dTrieStorageHash, dTrieUpdateAccount, dTrieUpdateStorage time.Duration
+	var dBlockExec time.Duration
+	var dSnapAccountRead, dSnapStorageRead, dAccountRead, dStorageRead time.Duration
+	var dCommit, dCommitAccount, dCommitStorage, dCommitSnap, dCommitTrie time.Duration
+	var t0 = time.Now()
+	defer func() {
+		log.Debug("(empty block) insertChain",
+			"number", chain[0].NumberU64(),
+			"duration", time.Since(t0),
+			// sender cache
+			"dSenderCache", dSenderCache,
+			// chain head feed blocking
+			"dChainHeadFeed", dChainHeadFeed,
+
+			//summary
+			"dBlockWrite", dBlockWrite,
+			"dBlockInsert", dBlockInsert,
+			"dCommit", dCommit,
+			"dBlockValidate", dBlockValidate,
+			"dBlockExec", dBlockExec,
+
+			//block verify
+			"vali.dTrieAccountHash", dTrieAccountHash,
+			"vali.dTrieStorageHash", dTrieStorageHash,
+			"vali.dTrieUpdateAccount", dTrieUpdateAccount,
+			"vali.dTrieUpdateStorage", dTrieUpdateStorage,
+
+			//block execution
+			"exec.dSnapAccountRead", dSnapAccountRead,
+			"exec.dSnapStorageRead", dSnapStorageRead,
+			"exec.dAccountRead", dAccountRead,
+			"exec.dStorageRead", dStorageRead,
+
+			//block commition
+			"comm.dCommitAccount", dCommitAccount,
+			"comm.dCommitSnap", dCommitSnap,
+			"comm.dCommitStorage", dCommitStorage,
+			"comm.dCommtTrie", dCommitTrie,
+		)
+	}()
 	if bc.insertStopped() {
-		log.Debug("(empty block) Recovered senders stopped", "number", chain[0].NumberU64(), "duration", time.Since(t0))
 		return 0, nil
 	}
 
 	// Start a parallel signature recovery (signer will fluke on fork transition, minimal perf loss)
 	SenderCacher.RecoverFromBlocks(types.MakeSigner(bc.chainConfig, chain[0].Number(), chain[0].Time()), chain)
-	log.Debug("(empty block) Recovered senders", "number", chain[0].NumberU64(), "duration", time.Since(t0))
+	dSenderCache = time.Since(t0)
 
 	var (
 		stats     = insertStats{startTime: mclock.Now()}
@@ -1643,11 +1686,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 	)
 	// Fire a single chain head event if we've progressed the chain
 	defer func() {
-		t0 = time.Now()
 		if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
+			tf := time.Now()
 			bc.chainHeadFeed.Send(ChainHeadEvent{lastCanon})
+			dChainHeadFeed = time.Since(tf)
 		}
-		log.Debug("(empty block) chain head fee", "number", chain[0].NumberU64(), "duration", time.Since(t0))
 	}()
 	// Start the parallel header verifier
 	headers := make([]*types.Header, len(chain))
@@ -1894,6 +1937,19 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 		blockExecutionTimer.Update(ptime - trieRead)                    // The time spent on EVM processing
 		blockValidationTimer.Update(vtime - (triehash + trieUpdate))    // The time spent on block validation
 
+		//block validate
+		dBlockValidate = vtime - (triehash + trieUpdate)
+		dTrieAccountHash = statedb.AccountHashes
+		dTrieStorageHash = statedb.StorageHashes
+		dTrieUpdateAccount = statedb.AccountUpdates
+		dTrieUpdateStorage = statedb.StorageUpdates
+		//block execution
+		dBlockExec = ptime - trieRead
+		dSnapAccountRead = statedb.SnapshotAccountReads
+		dSnapStorageRead = statedb.SnapshotStorageReads
+		dAccountRead = statedb.AccountReads
+		dStorageRead = statedb.StorageReads
+
 		// Write the block to the chain and get the status.
 		var (
 			wstart = time.Now()
@@ -1915,8 +1971,16 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 		snapshotCommitTimer.Update(statedb.SnapshotCommits) // Snapshot commits are complete, we can mark them
 		triedbCommitTimer.Update(statedb.TrieDBCommits)     // Trie database commits are complete, we can mark them
 
-		blockWriteTimer.Update(time.Since(wstart) - statedb.AccountCommits - statedb.StorageCommits - statedb.SnapshotCommits - statedb.TrieDBCommits)
-		blockInsertTimer.UpdateSince(start)
+		dCommitAccount = statedb.AccountCommits
+		dCommitStorage = statedb.StorageCommits
+		dCommitSnap = statedb.SnapshotCommits
+		dCommitTrie = statedb.TrieDBCommits
+		dCommit = dCommitAccount + dCommitStorage + dCommitSnap + dCommitTrie
+
+		dBlockWrite = time.Since(wstart) - statedb.AccountCommits - statedb.StorageCommits - statedb.SnapshotCommits - statedb.TrieDBCommits
+		dBlockInsert = time.Since(start)
+		blockWriteTimer.Update(dBlockWrite)
+		blockInsertTimer.Update(dBlockInsert)
 
 		// Report the import stats before returning the various results
 		stats.processed++
