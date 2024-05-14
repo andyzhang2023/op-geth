@@ -1642,6 +1642,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			"number", chain[0].NumberU64(),
 			"duration", time.Since(t0),
 			// sender cache
+			"senderCacheThreads", SenderCacher.threads,
 			"dSenderCache", dSenderCache,
 			// chain head feed blocking
 			"dChainHeadFeed", dChainHeadFeed,
