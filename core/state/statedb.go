@@ -133,6 +133,9 @@ type StateDB struct {
 	SnapshotCommits      time.Duration
 	TrieDBCommits        time.Duration
 
+	SnapTimer TimerMetrics
+	TrieTimer TimerMetrics
+
 	AccountUpdated int
 	StorageUpdated int
 	AccountDeleted int
@@ -140,6 +143,28 @@ type StateDB struct {
 
 	// Testing hooks
 	onCommit func(states *triestate.Set) // Hook invoked when commit is performed
+}
+
+type TimerMetrics struct {
+	Metric      metrics.Timer
+	Duration    time.Duration
+	Count       int
+	MaxDuration time.Duration
+	MinDuration time.Duration
+}
+
+func (tm *TimerMetrics) Watch(dur time.Duration) {
+	if dur > tm.MaxDuration {
+		tm.MaxDuration = dur
+	}
+	if dur < tm.MinDuration || tm.MinDuration == 0 {
+		tm.MinDuration = dur
+	}
+	tm.Count += 1
+	tm.Duration += dur
+	if tm.Metric != nil {
+		tm.Metric.Update(dur)
+	}
 }
 
 // New creates a new state from a given trie.
@@ -585,6 +610,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	if s.snap != nil {
 		start := time.Now()
 		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+		s.SnapTimer.Watch(time.Since(start))
 		if metrics.EnabledExpensive {
 			s.SnapshotAccountReads += time.Since(start)
 		}
@@ -611,6 +637,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		start := time.Now()
 		var err error
 		data, err = s.trie.GetAccount(addr)
+		s.TrieTimer.Watch(time.Since(start))
 		if metrics.EnabledExpensive {
 			s.AccountReads += time.Since(start)
 		}

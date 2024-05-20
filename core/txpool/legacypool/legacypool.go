@@ -106,6 +106,42 @@ var (
 	reheapTimer = metrics.NewRegisteredTimer("txpool/reheap", nil)
 
 	staledMeter = metrics.NewRegisteredMeter("txpool/staled/count", nil) // staled transactions
+
+	// latency of runReorg
+	resettimeTimer            = metrics.NewRegisteredTimer("txpool/resettime", nil)
+	demotetimeTimer           = metrics.NewRegisteredTimer("txpool/demotetime", nil)
+	promotetimeTimer          = metrics.NewRegisteredTimer("txpool/promotetime", nil)
+	queueTruncateTimer        = metrics.NewRegisteredTimer("txpool/queue/truncatetime", nil)
+	pendingTruncateTimer      = metrics.NewRegisteredTimer("txpool/pending/truncatetime", nil)
+	reorgresetTimer           = metrics.NewRegisteredTimer("txpool/reorgresettime", nil)
+	reheapresetTimer          = metrics.NewRegisteredTimer("txpool/reheapresettime", nil)
+	noblockingReorgresetTimer = metrics.NewRegisteredTimer("txpool/noblocking/reorgresettime", nil)
+
+	// latency of state reads
+	snapDurationPerReads = metrics.NewRegisteredTimer("txpool/snapreads/per", nil)
+	trieDurationPerReads = metrics.NewRegisteredTimer("txpool/triereads/per", nil)
+	snapReadsTimer       = metrics.NewRegisteredTimer("txpool/snapreads", nil)
+	trieReadsTimer       = metrics.NewRegisteredTimer("txpool/triereads", nil)
+	snapReadsMeter       = metrics.NewRegisteredMeter("txpool/snapreads/count", nil)
+	trieReadsMeter       = metrics.NewRegisteredMeter("txpool/triereads/count", nil)
+
+	//latency of calling Pending(), Locals() and Add()
+	pendingDurationTimer = metrics.NewRegisteredTimer("txpool/getpending/time", nil)
+	localDurationTimer   = metrics.NewRegisteredTimer("txpool/getlocals/time", nil)
+	addDurationTimer     = metrics.NewRegisteredTimer("txpool/add/time", nil)
+
+	//mutex latency
+	pendingDurationExecuTimer = metrics.NewRegisteredTimer("txpool/getpending/execu/time", nil)
+	addDurationExecuTimer     = metrics.NewRegisteredTimer("txpool/add/execu/time", nil)
+	evitDurationTimer         = metrics.NewRegisteredTimer("txpool/mutex/evit/duration", nil)
+	journalDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/journal/duration", nil)
+	reannounceDurationTimer   = metrics.NewRegisteredTimer("txpool/mutex/reannounce/duration", nil)
+	reportDurationTimer       = metrics.NewRegisteredTimer("txpool/mutex/report/duration", nil)
+	statusDurationTimer       = metrics.NewRegisteredTimer("txpool/mutex/status/duration", nil)
+	contentDurationTimer      = metrics.NewRegisteredTimer("txpool/mutex/content/duration", nil)
+	contentfromDurationTimer  = metrics.NewRegisteredTimer("txpool/mutex/contentfrom/duration", nil)
+	setgastipDurationTimer    = metrics.NewRegisteredTimer("txpool/mutex/setgastip/duration", nil)
+	nonceDurationTimer        = metrics.NewRegisteredTimer("txpool/mutex/nonce/duration", nil)
 )
 
 // BlockChain defines the minimal set of methods needed to back a tx pool with
@@ -375,6 +411,7 @@ func (pool *LegacyPool) loop() {
 
 	// Notify tests that the init phase is done
 	close(pool.initDoneCh)
+	var t0 time.Time
 	for {
 		select {
 		// Handle pool shutdown
@@ -384,7 +421,9 @@ func (pool *LegacyPool) loop() {
 		// Handle stats reporting ticks
 		case <-report.C:
 			pool.mu.RLock()
+			t0 = time.Now()
 			pending, queued := pool.stats()
+			reportDurationTimer.UpdateSince(t0)
 			pool.mu.RUnlock()
 			stales := int(pool.priced.stales.Load())
 
@@ -396,6 +435,7 @@ func (pool *LegacyPool) loop() {
 		// Handle inactive account transaction eviction
 		case <-evict.C:
 			pool.mu.Lock()
+			t0 = time.Now()
 			for addr := range pool.queue {
 				// Skip local transactions from the eviction mechanism
 				if pool.locals.contains(addr) {
@@ -410,20 +450,24 @@ func (pool *LegacyPool) loop() {
 					queuedEvictionMeter.Mark(int64(len(list)))
 				}
 			}
+			evitDurationTimer.UpdateSince(t0)
 			pool.mu.Unlock()
 
 		// Handle local transaction journal rotation
 		case <-journal.C:
 			if pool.journal != nil {
 				pool.mu.Lock()
+				t0 = time.Now()
 				if err := pool.journal.rotate(pool.toJournal()); err != nil {
 					log.Warn("Failed to rotate local tx journal", "err", err)
 				}
+				journalDurationTimer.UpdateSince(t0)
 				pool.mu.Unlock()
 			}
 
 		case <-reannounce.C:
 			pool.mu.RLock()
+			t0 = time.Now()
 			reannoTxs := func() []*types.Transaction {
 				txs := make([]*types.Transaction, 0)
 				for addr, list := range pool.pending {
@@ -444,6 +488,7 @@ func (pool *LegacyPool) loop() {
 				}
 				return txs
 			}()
+			reannounceDurationTimer.UpdateSince(t0)
 			pool.mu.RUnlock()
 			staledMeter.Mark(int64(len(reannoTxs)))
 			if len(reannoTxs) > 0 {
@@ -494,6 +539,7 @@ func (pool *LegacyPool) SubscribeReannoTxsEvent(ch chan<- core.ReannoTxsEvent) e
 func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer setgastipDurationTimer.UpdateSince(time.Now())
 
 	old := pool.gasTip.Load()
 	pool.gasTip.Store(new(big.Int).Set(tip))
@@ -515,6 +561,7 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer nonceDurationTimer.UpdateSince(time.Now())
 
 	return pool.pendingNonces.get(addr)
 }
@@ -524,6 +571,7 @@ func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 func (pool *LegacyPool) Stats() (int, int) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer statusDurationTimer.UpdateSince(time.Now())
 
 	return pool.stats()
 }
@@ -547,6 +595,7 @@ func (pool *LegacyPool) stats() (int, int) {
 func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[common.Address][]*types.Transaction) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer contentDurationTimer.UpdateSince(time.Now())
 
 	pending := make(map[common.Address][]*types.Transaction, len(pool.pending))
 	for addr, list := range pool.pending {
@@ -564,6 +613,7 @@ func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[
 func (pool *LegacyPool) ContentFrom(addr common.Address) ([]*types.Transaction, []*types.Transaction) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer contentfromDurationTimer.UpdateSince(time.Now())
 
 	var pending []*types.Transaction
 	if list, ok := pool.pending[addr]; ok {
@@ -584,8 +634,10 @@ func (pool *LegacyPool) ContentFrom(addr common.Address) ([]*types.Transaction, 
 // transactions and only return those whose **effective** tip is large enough in
 // the next pending execution environment.
 func (pool *LegacyPool) Pending(enforceTips bool) map[common.Address][]*txpool.LazyTransaction {
+	defer pendingDurationTimer.UpdateSince(time.Now())
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer pendingDurationExecuTimer.UpdateSince(time.Now())
 
 	pending := make(map[common.Address][]*txpool.LazyTransaction, len(pool.pending))
 	for addr, list := range pool.pending {
@@ -622,6 +674,7 @@ func (pool *LegacyPool) Pending(enforceTips bool) map[common.Address][]*txpool.L
 
 // Locals retrieves the accounts currently considered local by the pool.
 func (pool *LegacyPool) Locals() []common.Address {
+	defer localDurationTimer.UpdateSince(time.Now())
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
@@ -1077,9 +1130,13 @@ func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error 
 	}
 
 	// Process all the new transaction and merge any errors into the original slice
+	t1 := time.Now()
 	pool.mu.Lock()
+	t0 := time.Now()
 	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
+	addDurationExecuTimer.UpdateSince(t0)
 	pool.mu.Unlock()
+	addDurationTimer.UpdateSince(t1)
 
 	var nilSlot = 0
 	for _, err := range newErrs {
@@ -1331,6 +1388,9 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
+		if reset != nil {
+			reorgresetTimer.UpdateSince(t0)
+		}
 	}(time.Now())
 	defer close(done)
 
@@ -1342,9 +1402,13 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 	pool.mu.Lock()
+	var tr = time.Now()
+	var t0 time.Time
 	if reset != nil {
 		// Reset from the old head to the new, rescheduling any reorged transactions
+		t0 = time.Now()
 		pool.reset(reset.oldHead, reset.newHead)
+		resettimeTimer.UpdateSince(t0)
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -1360,13 +1424,20 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		}
 	}
 	// Check for pending transactions for every account that sent new ones
+	t0 = time.Now()
 	promoted := pool.promoteExecutables(promoteAddrs)
+	if reset != nil {
+		promotetimeTimer.UpdateSince(t0)
+	}
 
 	// If a new block appeared, validate the pool of pending transactions. This will
 	// remove any transaction that has been included in the block or was invalidated
 	// because of another transaction (e.g. higher gas price).
 	if reset != nil {
+		t0 = time.Now()
 		pool.demoteUnexecutables()
+		demotetimeTimer.UpdateSince(t0)
+		t0 = time.Now()
 		if reset.newHead != nil {
 			if pool.chainconfig.IsLondon(new(big.Int).Add(reset.newHead.Number, big.NewInt(1))) {
 				pendingBaseFee := eip1559.CalcBaseFee(pool.chainconfig, reset.newHead, reset.newHead.Time+1)
@@ -1375,6 +1446,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 				pool.priced.Reheap()
 			}
 		}
+		reheapresetTimer.UpdateSince(t0)
 		// Update all accounts to the latest known pending nonce
 		nonces := make(map[common.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {
@@ -1384,11 +1456,19 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		pool.pendingNonces.setAll(nonces)
 	}
 	// Ensure pool.queue and pool.pending sizes stay within the configured limits.
+	t0 = time.Now()
 	pool.truncatePending()
+	pendingTruncateTimer.UpdateSince(t0)
+	t0 = time.Now()
 	pool.truncateQueue()
+	queueTruncateTimer.UpdateSince(t0)
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
+
+	if reset != nil {
+		noblockingReorgresetTimer.UpdateSince(tr)
+	}
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
@@ -1492,12 +1572,46 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
 	if newHead == nil {
 		newHead = pool.chain.CurrentBlock() // Special case during testing
 	}
+
 	statedb, err := pool.chain.StateAt(newHead.Root)
 	if err != nil {
 		log.Error("Failed to reset txpool state", "err", err)
 		return
 	}
 	pool.currentHead.Store(newHead)
+
+	// record logs and metrics for last block
+	oldstate := pool.currentState
+	if oldHead != nil {
+		var snapAvg, trieAvg time.Duration
+		if oldstate.SnapTimer.Count > 0 {
+			snapAvg = oldstate.SnapTimer.Duration / time.Duration(oldstate.SnapTimer.Count)
+		}
+		if oldstate.TrieTimer.Count > 0 {
+			trieAvg = oldstate.TrieTimer.Duration / time.Duration(oldstate.TrieTimer.Count)
+		}
+		log.Info("snap reads and trie reads of last block",
+			"block number", oldHead.Number.Uint64(),
+			"block hash", oldHead.Hash().Hex(),
+			"snap reads", oldstate.SnapTimer.Count,
+			"trie reads", oldstate.TrieTimer.Count,
+			"snap duration(total)", oldstate.SnapTimer.Duration,
+			"trie duration(total)", oldstate.TrieTimer.Duration,
+			"max snap duration", oldstate.SnapTimer.MaxDuration,
+			"min snap duration", oldstate.SnapTimer.MinDuration,
+			"avg snap duration", snapAvg,
+			"max trie duration", oldstate.TrieTimer.MaxDuration,
+			"min trie duration", oldstate.TrieTimer.MinDuration,
+			"avg trie duration", trieAvg,
+		)
+	}
+	snapReadsTimer.Update(oldstate.SnapTimer.Duration)
+	trieReadsTimer.Update(oldstate.TrieTimer.Duration)
+	snapReadsMeter.Mark(int64(oldstate.SnapTimer.Count))
+	trieReadsMeter.Mark(int64(oldstate.TrieTimer.Count))
+	statedb.SnapTimer.Metric = snapDurationPerReads
+	statedb.TrieTimer.Metric = trieDurationPerReads
+
 	pool.currentState = statedb
 	pool.pendingNonces = newNoncer(statedb)
 
