@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    branches: [main, develop]
+    branches: [main, develop, pending-debug-ci, 1mgas-txpool-v0.3.0-pending-debug-ci]
 
 jobs:
   unit_test:
