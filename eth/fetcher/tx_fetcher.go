@@ -24,6 +24,7 @@ import (
 	mrand "math/rand"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -106,6 +107,11 @@ var (
 	txFetcherQueueingHashes = metrics.NewRegisteredGauge("eth/fetcher/transaction/queueing/hashes", nil)
 	txFetcherFetchingPeers  = metrics.NewRegisteredGauge("eth/fetcher/transaction/fetching/peers", nil)
 	txFetcherFetchingHashes = metrics.NewRegisteredGauge("eth/fetcher/transaction/fetching/hashes", nil)
+
+	txEnqueueInMeter      = metrics.NewRegisteredMeter("eth/fetcher/transaction/enqueue/in", nil)
+	txEnqueueAbandonMeter = metrics.NewRegisteredMeter("eth/fetcher/transaction/enqueue/abandon", nil)
+	txEnqueueLenGauge     = metrics.NewRegisteredGauge("eth/fetcher/transaction/enqueue/len", nil)
+	txEnqueueTxNumGauge   = metrics.NewRegisteredGauge("eth/fetcher/transaction/enqueue/tx/num", nil)
 )
 
 // txAnnounce is the notification of the availability of a batch
@@ -197,6 +203,16 @@ type TxFetcher struct {
 	step  chan struct{} // Notification channel when the fetcher loop iterates
 	clock mclock.Clock  // Time wrapper to simulate in tests
 	rand  *mrand.Rand   // Randomizer to use in tests instead of map range loops (soft-random)
+
+	enqueueBuffer      chan *txEnqueue // Buffer of pending transaction requests
+	enqueueBufferLen   int64
+	enqueueBufferTxNum int64
+}
+
+type txEnqueue struct {
+	peer   string
+	txs    []*types.Transaction
+	direct bool
 }
 
 // NewTxFetcher creates a transaction fetcher to retrieve transaction
@@ -210,27 +226,32 @@ func NewTxFetcher(hasTx func(common.Hash) bool, addTxs func([]*types.Transaction
 func NewTxFetcherForTests(
 	hasTx func(common.Hash) bool, addTxs func([]*types.Transaction) []error, fetchTxs func(string, []common.Hash) error, dropPeer func(string),
 	clock mclock.Clock, rand *mrand.Rand) *TxFetcher {
-	return &TxFetcher{
-		notify:      make(chan *txAnnounce),
-		cleanup:     make(chan *txDelivery),
-		drop:        make(chan *txDrop),
-		quit:        make(chan struct{}),
-		waitlist:    make(map[common.Hash]map[string]struct{}),
-		waittime:    make(map[common.Hash]mclock.AbsTime),
-		waitslots:   make(map[string]map[common.Hash]*txMetadata),
-		announces:   make(map[string]map[common.Hash]*txMetadata),
-		announced:   make(map[common.Hash]map[string]struct{}),
-		fetching:    make(map[common.Hash]string),
-		requests:    make(map[string]*txRequest),
-		alternates:  make(map[common.Hash]map[string]struct{}),
-		underpriced: lru.NewCache[common.Hash, time.Time](maxTxUnderpricedSetSize),
-		hasTx:       hasTx,
-		addTxs:      addTxs,
-		fetchTxs:    fetchTxs,
-		dropPeer:    dropPeer,
-		clock:       clock,
-		rand:        rand,
+	f := &TxFetcher{
+		notify:             make(chan *txAnnounce),
+		cleanup:            make(chan *txDelivery),
+		drop:               make(chan *txDrop),
+		quit:               make(chan struct{}),
+		waitlist:           make(map[common.Hash]map[string]struct{}),
+		waittime:           make(map[common.Hash]mclock.AbsTime),
+		waitslots:          make(map[string]map[common.Hash]*txMetadata),
+		announces:          make(map[string]map[common.Hash]*txMetadata),
+		announced:          make(map[common.Hash]map[string]struct{}),
+		fetching:           make(map[common.Hash]string),
+		requests:           make(map[string]*txRequest),
+		alternates:         make(map[common.Hash]map[string]struct{}),
+		underpriced:        lru.NewCache[common.Hash, time.Time](maxTxUnderpricedSetSize),
+		hasTx:              hasTx,
+		addTxs:             addTxs,
+		fetchTxs:           fetchTxs,
+		dropPeer:           dropPeer,
+		clock:              clock,
+		rand:               rand,
+		enqueueBuffer:      make(chan *txEnqueue, 20480),
+		enqueueBufferLen:   0,
+		enqueueBufferTxNum: 0,
 	}
+	go f.dispatchEnqueueRequest()
+	return f
 }
 
 // Notify announces the fetcher of the potential availability of a new batch of
@@ -298,6 +319,36 @@ func (f *TxFetcher) isKnownUnderpriced(hash common.Hash) bool {
 // direct request replies. The differentiation is important so the fetcher can
 // re-schedule missing transactions as soon as possible.
 func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) error {
+	txEnqueueInMeter.Mark(int64(len(txs)))
+	select {
+	case f.enqueueBuffer <- &txEnqueue{peer: peer, txs: txs, direct: direct}:
+		atomic.AddInt64(&f.enqueueBufferLen, 1)
+		atomic.AddInt64(&f.enqueueBufferTxNum, int64(len(txs)))
+	case <-f.quit:
+		return errTerminated
+	default:
+		// If the buffer is full, abandon the request directly, and record the metrics
+		txEnqueueAbandonMeter.Mark(int64(len(txs)))
+	}
+	txEnqueueLenGauge.Update(atomic.LoadInt64(&f.enqueueBufferLen))
+	txEnqueueTxNumGauge.Update(atomic.LoadInt64(&f.enqueueBufferTxNum))
+	return nil
+}
+
+func (f *TxFetcher) dispatchEnqueueRequest() {
+	for {
+		select {
+		case req := <-f.enqueueBuffer:
+			atomic.AddInt64(&f.enqueueBufferLen, -1)
+			atomic.AddInt64(&f.enqueueBufferTxNum, -int64(len(req.txs)))
+			f.enqueue(req.peer, req.txs, req.direct)
+		case <-f.quit:
+			return
+		}
+	}
+}
+
+func (f *TxFetcher) enqueue(peer string, txs []*types.Transaction, direct bool) {
 	var (
 		inMeter          = txReplyInMeter
 		knownMeter       = txReplyKnownMeter
@@ -369,12 +420,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 			log.Debug("Peer delivering stale transactions", "peer", peer, "rejected", otherreject)
 		}
 	}
-	select {
-	case f.cleanup <- &txDelivery{origin: peer, hashes: added, metas: metas, direct: direct}:
-		return nil
-	case <-f.quit:
-		return errTerminated
-	}
+	f.cleanup <- &txDelivery{origin: peer, hashes: added, metas: metas, direct: direct}
 }
 
 // Drop should be called when a peer disconnects. It cleans up all the internal
