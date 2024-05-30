@@ -226,7 +226,7 @@ func NewTxFetcher(hasTx func(common.Hash) bool, addTxs func([]*types.Transaction
 func NewTxFetcherForTests(
 	hasTx func(common.Hash) bool, addTxs func([]*types.Transaction) []error, fetchTxs func(string, []common.Hash) error, dropPeer func(string),
 	clock mclock.Clock, rand *mrand.Rand) *TxFetcher {
-	f := &TxFetcher{
+	return &TxFetcher{
 		notify:             make(chan *txAnnounce),
 		cleanup:            make(chan *txDelivery),
 		drop:               make(chan *txDrop),
@@ -246,12 +246,10 @@ func NewTxFetcherForTests(
 		dropPeer:           dropPeer,
 		clock:              clock,
 		rand:               rand,
-		enqueueBuffer:      make(chan *txEnqueue, 20480),
+		enqueueBuffer:      make(chan *txEnqueue, 4096),
 		enqueueBufferLen:   0,
 		enqueueBufferTxNum: 0,
 	}
-	go f.dispatchEnqueueRequest()
-	return f
 }
 
 // Notify announces the fetcher of the potential availability of a new batch of
@@ -438,6 +436,9 @@ func (f *TxFetcher) Drop(peer string) error {
 // hash notifications and block fetches until termination requested.
 func (f *TxFetcher) Start() {
 	go f.loop()
+	for i := 0; i < 64; i++ {
+		go f.dispatchEnqueueRequest()
+	}
 }
 
 // Stop terminates the announcement based synchroniser, canceling all pending
