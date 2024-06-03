@@ -373,8 +373,9 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 	if _, ok := f.eqBuff[peer]; !ok {
 		f.eqBuff[peer] = newEnqueueBuffer(f, peer)
 	}
+	p := f.eqBuff[peer]
 	f.eqBuffLock.Unlock()
-	f.eqBuff[peer].Enqueue(txs, direct)
+	p.Enqueue(txs, direct)
 	return nil
 }
 
@@ -477,7 +478,9 @@ func (f *TxFetcher) Drop(peer string) error {
 	case f.drop <- &txDrop{peer: peer}:
 		f.eqBuffLock.Lock()
 		defer f.eqBuffLock.Unlock()
-		f.eqBuff[peer].Stop()
+		if p := f.eqBuff[peer]; p != nil {
+			p.Stop()
+		}
 		delete(f.eqBuff, peer)
 		return nil
 
