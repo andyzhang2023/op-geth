@@ -242,11 +242,12 @@ func (eb *enqueueBuffer) Enqueue(txs types.Transactions, direct bool) {
 	}
 }
 
-func newEnqueueBuffer(fetcher *TxFetcher) *enqueueBuffer {
+func newEnqueueBuffer(fetcher *TxFetcher, peer string) *enqueueBuffer {
 	eb := &enqueueBuffer{
 		buff:    make(chan *enqueueRequest, 1024),
 		stop:    make(chan bool),
 		fetcher: fetcher,
+		peer:    peer,
 	}
 	go eb.dispatch()
 	return eb
@@ -370,7 +371,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 	txEnqueueInMeter.Mark(int64(len(txs)))
 	f.eqBuffLock.Lock()
 	if _, ok := f.eqBuff[peer]; !ok {
-		f.eqBuff[peer] = newEnqueueBuffer(f)
+		f.eqBuff[peer] = newEnqueueBuffer(f, peer)
 	}
 	f.eqBuffLock.Unlock()
 	f.eqBuff[peer].Enqueue(txs, direct)
