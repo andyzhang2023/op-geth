@@ -460,12 +460,16 @@ func (eb *enqueueBuffer) enqueue(f *TxFetcher, txs []*types.Transaction, direct 
 		}
 	}
 	txEnqueueAdd.Update(time.Since(t0))
-	txEnqueueAddPerTx.Update(time.Since(t0) / time.Duration(int64(len(txs))))
+	if len(txs) > 0 {
+		txEnqueueAddPerTx.Update(time.Since(t0) / time.Duration(int64(len(txs))))
+	}
 	t0 = time.Now()
 	select {
 	case f.cleanup <- &txDelivery{origin: peer, hashes: added, metas: metas, direct: direct}:
 		txEnqueueClean.Update(time.Since(t0))
-		txEnqueueCleanPerTx.Update(time.Since(t0) / time.Duration(int64(len(txs))))
+		if len(txs) > 0 {
+			txEnqueueCleanPerTx.Update(time.Since(t0) / time.Duration(int64(len(txs))))
+		}
 		return nil
 	case <-f.quit:
 		return errTerminated

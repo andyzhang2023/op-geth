@@ -18,6 +18,7 @@ package fetcher
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -1950,27 +1951,96 @@ func testTransactionFetcher(t *testing.T, tt txFetcherTest) {
 }
 
 func TestEnqueueParallel(t *testing.T) {
-	//var poollock sync.Mutex
-	//pool := make(map[common.Hash]*types.Transaction)
-	//fetcher := NewTxFetcher(
-	//	func(common.Hash) bool { return false },
-	//	func(txs []*types.Transaction) []error {
-	//		poollock.Lock()
-	//		defer poollock.Unlock()
-	//		for _, tx := range txs {
-	//			pool[tx.Hash()] = tx
-	//		}
-	//		return make([]error, len(txs))
-	//	},
-	//	func(string, []common.Hash) error { return nil },
-	//	nil,
-	//)
+	fetcher := NewTxFetcher(
+		func(common.Hash) bool { return false },
+		func(txs []*types.Transaction) []error {
+			// some times the txpool is busy
+			millsec := rand.Int31n(100)
+			time.Sleep(time.Duration(millsec) * time.Second)
+			return make([]error, len(txs))
+		},
+		func(string, []common.Hash) error { return nil },
+		nil,
+	)
 
-	//// run multiple enqueue goroutines to keep enqueueing transactions
-	//fetcher.Enqueue("nil", nil, false)
+	fetcher.Start()
 
-	//// drop some peers random
+	// a: Create multile tasks, in which:
+	//	1. a peer's buffer is created and enqueues 5000+ txs for it
+	//  2. a peer's is dropped, and repeated step 1, for 100 times.
+	// b: repeat process a for 10000 times
 
+	newTx := func() types.Transactions {
+		var txs types.Transactions
+		for i := 0; i < rand.Intn(10); i++ {
+			tx := types.NewTransaction(rand.Uint64(), common.Address{byte(rand.Intn(256))}, new(big.Int), 0, new(big.Int), nil)
+			txs = append(txs, tx)
+		}
+		return txs
+	}
+
+	createAndDropPeer := func(pid int) {
+		peer := fmt.Sprintf("peer%d", pid)
+		for i := 0; i < 5000; i++ {
+			fetcher.Enqueue(peer, newTx(), true)
+		}
+		fetcher.Drop(peer)
+	}
+
+	wait := sync.WaitGroup{}
+	for i := 0; i < 10; i++ {
+		wait.Add(1)
+		go func(taskid int) {
+			for j := 0; j < 100; j++ {
+				createAndDropPeer(j)
+			}
+			wait.Done()
+		}(i)
+	}
+	wait.Wait()
+	if len(fetcher.eqBuff) != 0 {
+		t.Fatalf("wrong number of transactions in the enqueue buffer: have %d, want %d", len(fetcher.eqBuff), 0)
+	}
+
+}
+
+func TestEnqueueAbandon(t *testing.T) {
+	var poollock sync.Mutex
+	pool := make(map[common.Hash]*types.Transaction)
+	var wait bool
+	fetcher := NewTxFetcher(
+		func(common.Hash) bool { return false },
+		func(txs []*types.Transaction) []error {
+			// block the txFetcher to make the enqueue buffer full
+			if !wait {
+				time.Sleep(1 * time.Second)
+				wait = true
+			}
+			poollock.Lock()
+			defer poollock.Unlock()
+			for _, tx := range txs {
+				pool[tx.Hash()] = tx
+			}
+			return make([]error, len(txs))
+		},
+		func(string, []common.Hash) error { return nil },
+		nil,
+	)
+
+	fetcher.Start()
+
+	// Create a slew of transactions to max out the underpriced set
+	var txNum = 10000
+	for i := 0; i < txNum; i++ {
+		tx := types.NewTransaction(rand.Uint64(), common.Address{byte(rand.Intn(256))}, new(big.Int), 0, new(big.Int), nil)
+		fetcher.Enqueue("peer", []*types.Transaction{tx}, true)
+	}
+	// we abandon 10000 - (1024 +1) = 8975 transactions
+	// wait for transactions go into pool from enqueue buffer
+	time.Sleep(2 * time.Second)
+	if len(pool) != 1025 {
+		t.Fatalf("wrong number of transactions in the pool: have %d, want %d; enqueueBuffTxNum:%d", len(pool), 1025, fetcher.eqBuff["peer"].txNum)
+	}
 }
 
 func TestEnqueue(t *testing.T) {
@@ -1989,6 +2059,7 @@ func TestEnqueue(t *testing.T) {
 		func(string, []common.Hash) error { return nil },
 		nil,
 	)
+	fetcher.Start()
 
 	// Create a slew of transactions to max out the underpriced set
 	var txs []*types.Transaction
