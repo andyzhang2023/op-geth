@@ -304,6 +304,7 @@ func NewTxFetcherForTests(
 		dropPeer:    dropPeer,
 		clock:       clock,
 		rand:        rand,
+		eqBuff:      make(map[string]*enqueueBuffer),
 	}
 }
 

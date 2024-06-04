@@ -20,6 +20,7 @@ import (
 	"errors"
 	"math/big"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -1945,6 +1946,61 @@ func testTransactionFetcher(t *testing.T, tt txFetcherTest) {
 				t.Errorf("step %d: hash %s present in both stage 1 and 2", i, hash)
 			}
 		}
+	}
+}
+
+func TestEnqueueParallel(t *testing.T) {
+	//var poollock sync.Mutex
+	//pool := make(map[common.Hash]*types.Transaction)
+	//fetcher := NewTxFetcher(
+	//	func(common.Hash) bool { return false },
+	//	func(txs []*types.Transaction) []error {
+	//		poollock.Lock()
+	//		defer poollock.Unlock()
+	//		for _, tx := range txs {
+	//			pool[tx.Hash()] = tx
+	//		}
+	//		return make([]error, len(txs))
+	//	},
+	//	func(string, []common.Hash) error { return nil },
+	//	nil,
+	//)
+
+	//// run multiple enqueue goroutines to keep enqueueing transactions
+	//fetcher.Enqueue("nil", nil, false)
+
+	//// drop some peers random
+
+}
+
+func TestEnqueue(t *testing.T) {
+	var poollock sync.Mutex
+	pool := make(map[common.Hash]*types.Transaction)
+	fetcher := NewTxFetcher(
+		func(common.Hash) bool { return false },
+		func(txs []*types.Transaction) []error {
+			poollock.Lock()
+			defer poollock.Unlock()
+			for _, tx := range txs {
+				pool[tx.Hash()] = tx
+			}
+			return make([]error, len(txs))
+		},
+		func(string, []common.Hash) error { return nil },
+		nil,
+	)
+
+	// Create a slew of transactions to max out the underpriced set
+	var txs []*types.Transaction
+	var txNum = 10000
+	for i := 0; i < txNum; i++ {
+		txs = append(txs, types.NewTransaction(rand.Uint64(), common.Address{byte(rand.Intn(256))}, new(big.Int), 0, new(big.Int), nil))
+	}
+
+	fetcher.Enqueue("peer", txs, true)
+	time.Sleep(100 * time.Millisecond)
+	if len(pool) != txNum {
+		t.Fatalf("wrong number of transactions in the pool: have %d, want %d", len(pool), txNum)
 	}
 }
 
