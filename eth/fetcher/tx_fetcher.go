@@ -24,6 +24,8 @@ import (
 	mrand "math/rand"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -106,6 +108,16 @@ var (
 	txFetcherQueueingHashes = metrics.NewRegisteredGauge("eth/fetcher/transaction/queueing/hashes", nil)
 	txFetcherFetchingPeers  = metrics.NewRegisteredGauge("eth/fetcher/transaction/fetching/peers", nil)
 	txFetcherFetchingHashes = metrics.NewRegisteredGauge("eth/fetcher/transaction/fetching/hashes", nil)
+
+	txEnqueueInMeter      = metrics.NewRegisteredMeter("eth/fetcher/transaction/enqueue/in", nil)
+	txEnqueueAbandonMeter = metrics.NewRegisteredMeter("eth/fetcher/transaction/enqueue/abandon", nil)
+	txEnqueueLenGauge     = metrics.NewRegisteredGauge("eth/fetcher/transaction/enqueue/len", nil)
+	txEnqueueTxNumGauge   = metrics.NewRegisteredGauge("eth/fetcher/transaction/enqueue/tx/num", nil)
+	txEnqueueSleepTimer   = metrics.NewRegisteredTimer("eth/fetcher/transaction/enqueue/sleep/count", nil)
+	txEnqueueAdd          = metrics.NewRegisteredTimer("eth/fetcher/transaction/enqueue/add", nil)
+	txEnqueueAddPerTx     = metrics.NewRegisteredTimer("eth/fetcher/transaction/enqueue/add/per/tx", nil)
+	txEnqueueClean        = metrics.NewRegisteredTimer("eth/fetcher/transaction/enqueue/clean", nil)
+	txEnqueueCleanPerTx   = metrics.NewRegisteredTimer("eth/fetcher/transaction/enqueue/clean/per/tx", nil)
 )
 
 // txAnnounce is the notification of the availability of a batch
@@ -197,6 +209,68 @@ type TxFetcher struct {
 	step  chan struct{} // Notification channel when the fetcher loop iterates
 	clock mclock.Clock  // Time wrapper to simulate in tests
 	rand  *mrand.Rand   // Randomizer to use in tests instead of map range loops (soft-random)
+
+	// enqueue buffer
+	eqBuffLock sync.Mutex
+	eqBuff     map[string]*enqueueBuffer
+}
+
+type enqueueBuffer struct {
+	peer    string
+	buff    chan *enqueueRequest
+	stop    chan bool
+	txNum   int64
+	fetcher *TxFetcher
+}
+
+type enqueueRequest struct {
+	direct bool
+	txs    types.Transactions
+}
+
+func (eb *enqueueBuffer) Enqueue(txs types.Transactions, direct bool) {
+	select {
+	case eb.buff <- &enqueueRequest{direct: direct, txs: txs}:
+		txEnqueueTxNumGauge.Inc(int64(len(txs)))
+		txEnqueueLenGauge.Inc(1)
+		atomic.AddInt64(&eb.txNum, int64(len(txs)))
+
+	case <-eb.stop:
+		txEnqueueAbandonMeter.Mark(int64(len(txs)))
+	default:
+		txEnqueueAbandonMeter.Mark(int64(len(txs)))
+	}
+}
+
+func newEnqueueBuffer(fetcher *TxFetcher, peer string) *enqueueBuffer {
+	eb := &enqueueBuffer{
+		buff:    make(chan *enqueueRequest, 1024),
+		stop:    make(chan bool),
+		fetcher: fetcher,
+		peer:    peer,
+	}
+	go eb.dispatch()
+	return eb
+}
+
+func (eb *enqueueBuffer) dispatch() {
+	for {
+		select {
+		case req := <-eb.buff:
+			txEnqueueTxNumGauge.Dec(int64(len(req.txs)))
+			txEnqueueLenGauge.Dec(1)
+			atomic.AddInt64(&eb.txNum, -int64(len(req.txs)))
+			eb.enqueue(eb.fetcher, req.txs, req.direct)
+
+		case <-eb.stop:
+			txEnqueueTxNumGauge.Dec(atomic.LoadInt64(&eb.txNum))
+			return
+		}
+	}
+}
+
+func (eb *enqueueBuffer) Stop() {
+	close(eb.stop)
 }
 
 // NewTxFetcher creates a transaction fetcher to retrieve transaction
@@ -230,6 +304,7 @@ func NewTxFetcherForTests(
 		dropPeer:    dropPeer,
 		clock:       clock,
 		rand:        rand,
+		eqBuff:      make(map[string]*enqueueBuffer),
 	}
 }
 
@@ -293,11 +368,24 @@ func (f *TxFetcher) isKnownUnderpriced(hash common.Hash) bool {
 	return ok
 }
 
+func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) error {
+	txEnqueueInMeter.Mark(int64(len(txs)))
+	f.eqBuffLock.Lock()
+	if _, ok := f.eqBuff[peer]; !ok {
+		f.eqBuff[peer] = newEnqueueBuffer(f, peer)
+	}
+	p := f.eqBuff[peer]
+	f.eqBuffLock.Unlock()
+	p.Enqueue(txs, direct)
+	return nil
+}
+
 // Enqueue imports a batch of received transaction into the transaction pool
 // and the fetcher. This method may be called by both transaction broadcasts and
 // direct request replies. The differentiation is important so the fetcher can
 // re-schedule missing transactions as soon as possible.
-func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) error {
+func (eb *enqueueBuffer) enqueue(f *TxFetcher, txs []*types.Transaction, direct bool) error {
+	peer := eb.peer
 	var (
 		inMeter          = txReplyInMeter
 		knownMeter       = txReplyKnownMeter
@@ -320,6 +408,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 		metas = make([]txMetadata, 0, len(txs))
 	)
 	// proceed in batches
+	t0 := time.Now()
 	for i := 0; i < len(txs); i += 128 {
 		end := i + 128
 		if end > len(txs) {
@@ -366,11 +455,17 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 		// If 'other reject' is >25% of the deliveries in any batch, sleep a bit.
 		if otherreject > 128/4 {
 			time.Sleep(200 * time.Millisecond)
+			txEnqueueSleepTimer.Update(200 * time.Millisecond)
 			log.Debug("Peer delivering stale transactions", "peer", peer, "rejected", otherreject)
 		}
 	}
+	txEnqueueAdd.Update(time.Since(t0))
+	txEnqueueAddPerTx.Update(time.Since(t0) / time.Duration(int64(len(txs))))
+	t0 = time.Now()
 	select {
 	case f.cleanup <- &txDelivery{origin: peer, hashes: added, metas: metas, direct: direct}:
+		txEnqueueClean.Update(time.Since(t0))
+		txEnqueueCleanPerTx.Update(time.Since(t0) / time.Duration(int64(len(txs))))
 		return nil
 	case <-f.quit:
 		return errTerminated
@@ -382,7 +477,14 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 func (f *TxFetcher) Drop(peer string) error {
 	select {
 	case f.drop <- &txDrop{peer: peer}:
+		f.eqBuffLock.Lock()
+		defer f.eqBuffLock.Unlock()
+		if p := f.eqBuff[peer]; p != nil {
+			p.Stop()
+		}
+		delete(f.eqBuff, peer)
 		return nil
+
 	case <-f.quit:
 		return errTerminated
 	}
