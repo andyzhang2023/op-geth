@@ -61,6 +61,14 @@ const (
 	// re-request them.
 	maxTxUnderpricedSetSize = 32768
 
+	// maxKnownSetSize is the size of the already-known transaction set that
+	// is used to track recent transactions that have been add so we don't re-add them.
+	maxKnownTxSetSize = 32768
+
+	// maxKnownTxTimeout is the max time a transaction should be stuck in the known set.
+	// A transaction should not be stuck in the known set longer than a reannounce interval.(default to be 1min)
+	maxKnownTxTimeout = 5 * time.Second
+
 	// maxTxUnderpricedTimeout is the max time a transaction should be stuck in the underpriced set.
 	maxTxUnderpricedTimeout = 5 * time.Minute
 
@@ -197,6 +205,9 @@ type TxFetcher struct {
 	step  chan struct{} // Notification channel when the fetcher loop iterates
 	clock mclock.Clock  // Time wrapper to simulate in tests
 	rand  *mrand.Rand   // Randomizer to use in tests instead of map range loops (soft-random)
+
+	// known buffer
+	alreadyKnown *alreadyKnown
 }
 
 // NewTxFetcher creates a transaction fetcher to retrieve transaction
@@ -211,25 +222,26 @@ func NewTxFetcherForTests(
 	hasTx func(common.Hash) bool, addTxs func([]*types.Transaction) []error, fetchTxs func(string, []common.Hash) error, dropPeer func(string),
 	clock mclock.Clock, rand *mrand.Rand) *TxFetcher {
 	return &TxFetcher{
-		notify:      make(chan *txAnnounce),
-		cleanup:     make(chan *txDelivery),
-		drop:        make(chan *txDrop),
-		quit:        make(chan struct{}),
-		waitlist:    make(map[common.Hash]map[string]struct{}),
-		waittime:    make(map[common.Hash]mclock.AbsTime),
-		waitslots:   make(map[string]map[common.Hash]*txMetadata),
-		announces:   make(map[string]map[common.Hash]*txMetadata),
-		announced:   make(map[common.Hash]map[string]struct{}),
-		fetching:    make(map[common.Hash]string),
-		requests:    make(map[string]*txRequest),
-		alternates:  make(map[common.Hash]map[string]struct{}),
-		underpriced: lru.NewCache[common.Hash, time.Time](maxTxUnderpricedSetSize),
-		hasTx:       hasTx,
-		addTxs:      addTxs,
-		fetchTxs:    fetchTxs,
-		dropPeer:    dropPeer,
-		clock:       clock,
-		rand:        rand,
+		notify:       make(chan *txAnnounce),
+		cleanup:      make(chan *txDelivery),
+		drop:         make(chan *txDrop),
+		quit:         make(chan struct{}),
+		waitlist:     make(map[common.Hash]map[string]struct{}),
+		waittime:     make(map[common.Hash]mclock.AbsTime),
+		waitslots:    make(map[string]map[common.Hash]*txMetadata),
+		announces:    make(map[string]map[common.Hash]*txMetadata),
+		announced:    make(map[common.Hash]map[string]struct{}),
+		fetching:     make(map[common.Hash]string),
+		requests:     make(map[string]*txRequest),
+		alternates:   make(map[common.Hash]map[string]struct{}),
+		underpriced:  lru.NewCache[common.Hash, time.Time](maxTxUnderpricedSetSize),
+		hasTx:        hasTx,
+		addTxs:       addTxs,
+		fetchTxs:     fetchTxs,
+		dropPeer:     dropPeer,
+		clock:        clock,
+		rand:         rand,
+		alreadyKnown: newAlreadyKnown(),
 	}
 }
 
@@ -313,6 +325,16 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 	// Keep track of all the propagated transactions
 	inMeter.Mark(int64(len(txs)))
 
+	// Filter out any transactions that we already know of, or that we've previously
+	var tmp []*types.Transaction = make([]*types.Transaction, 0, len(txs))
+	for _, tx := range txs {
+		if f.alreadyKnown.Has(tx.Hash()) { // already known
+			continue
+		}
+		tmp = append(tmp, tx)
+	}
+	txs = tmp
+
 	// Push all the transactions into the pool, tracking underpriced ones to avoid
 	// re-requesting them and dropping the peer in case of malicious transfers.
 	var (
@@ -342,6 +364,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 			// Track a few interesting failure types
 			switch {
 			case err == nil: // Noop, but need to handle to not count these
+				f.alreadyKnown.Add(batch[j].Hash())
 
 			case errors.Is(err, txpool.ErrAlreadyKnown):
 				duplicate++
@@ -972,6 +995,32 @@ func (f *TxFetcher) forEachAnnounce(announces map[common.Hash]*txMetadata, do fu
 			return
 		}
 	}
+}
+
+type alreadyKnown struct {
+	cache *lru.Cache[common.Hash, time.Time] // Transactions already known
+}
+
+func newAlreadyKnown() *alreadyKnown {
+	return &alreadyKnown{
+		cache: lru.NewCache[common.Hash, time.Time](maxKnownTxSetSize),
+	}
+}
+
+func (a *alreadyKnown) Add(hash common.Hash) {
+	a.cache.Add(hash, time.Now())
+}
+
+func (a *alreadyKnown) Has(hash common.Hash) bool {
+	lasttime, ok := a.cache.Get(hash)
+	if !ok {
+		return false
+	}
+	if time.Since(lasttime) > maxKnownTxTimeout {
+		a.cache.Remove(hash)
+		return false
+	}
+	return true
 }
 
 // rotateStrings rotates the contents of a slice by n steps. This method is only
