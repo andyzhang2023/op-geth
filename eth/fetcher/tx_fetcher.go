@@ -67,7 +67,7 @@ const (
 
 	// maxKnownTxTimeout is the max time a transaction should be stuck in the known set.
 	// A transaction should not be stuck in the known set longer than a reannounce interval.(default to be 1min)
-	maxKnownTxTimeout = 5 * time.Second
+	maxKnownTxTimeout = 3 * time.Second
 
 	// maxTxUnderpricedTimeout is the max time a transaction should be stuck in the underpriced set.
 	maxTxUnderpricedTimeout = 5 * time.Minute
@@ -114,6 +114,7 @@ var (
 	txFetcherQueueingHashes = metrics.NewRegisteredGauge("eth/fetcher/transaction/queueing/hashes", nil)
 	txFetcherFetchingPeers  = metrics.NewRegisteredGauge("eth/fetcher/transaction/fetching/peers", nil)
 	txFetcherFetchingHashes = metrics.NewRegisteredGauge("eth/fetcher/transaction/fetching/hashes", nil)
+	txFetcherFilteredKnown  = metrics.NewRegisteredMeter("eth/fetcher/transaction/filtered/known", nil)
 )
 
 // txAnnounce is the notification of the availability of a batch
@@ -329,6 +330,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 	var tmp []*types.Transaction = make([]*types.Transaction, 0, len(txs))
 	for _, tx := range txs {
 		if f.alreadyKnown.Has(tx.Hash()) { // already known
+			txFetcherFilteredKnown.Mark(1)
 			continue
 		}
 		tmp = append(tmp, tx)
