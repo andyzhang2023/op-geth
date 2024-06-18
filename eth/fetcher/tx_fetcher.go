@@ -342,12 +342,15 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 			// Track a few interesting failure types
 			switch {
 			case err == nil: // Noop, but need to handle to not count these
+				log.Trace("Peer's transaction accepted succefully", "peer", peer, "txHash", batch[j].Hash().String())
 
 			case errors.Is(err, txpool.ErrAlreadyKnown):
 				duplicate++
+				log.Trace("Peer's transaction rejected", "peer", peer, "txHash", batch[j].Hash().String(), "err", err.Error())
 
 			case errors.Is(err, txpool.ErrUnderpriced) || errors.Is(err, txpool.ErrReplaceUnderpriced):
 				underpriced++
+				log.Trace("Peer's transaction rejected", "peer", peer, "txHash", batch[j].Hash().String(), "err", err.Error())
 
 			default:
 				otherreject++
