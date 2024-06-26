@@ -337,6 +337,7 @@ func (db *Database) Recover(root common.Hash, loader triestate.TrieLoader) error
 	}
 	// Short circuit if the target state is not recoverable.
 	root = types.TrieRootHash(root)
+
 	if !db.Recoverable(root) {
 		return errStateUnrecoverable
 	}
@@ -345,11 +346,14 @@ func (db *Database) Recover(root common.Hash, loader triestate.TrieLoader) error
 		start = time.Now()
 		dl    = db.tree.bottom()
 	)
+	//  fmt.Printf("Dav -- pathdb Recover, dl, root: %s\n", dl.rootHash())
 	for dl.rootHash() != root {
+		// fmt.Printf("Dav -- pathdb Recover, not equal, dl.root %s, root: %s\n", dl.rootHash(), root)
 		h, err := readHistory(db.freezer, dl.stateID())
 		if err != nil {
 			return err
 		}
+
 		dl, err = dl.revert(h, loader)
 		if err != nil {
 			return err

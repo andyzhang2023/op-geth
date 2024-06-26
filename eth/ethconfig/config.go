@@ -184,6 +184,9 @@ type Config struct {
 	RollupDisableTxPoolGossip               bool
 	RollupDisableTxPoolAdmission            bool
 	RollupHaltOnIncompatibleProtocolVersion string
+
+	ParallelTxMode bool // Whether to execute transaction in parallel mode when do full sync
+	ParallelTxNum  int  // Number of slot for transaction execution
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain config.

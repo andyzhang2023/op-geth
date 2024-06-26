@@ -17,10 +17,10 @@
 package tests
 
 import (
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 )
 
 func TestBlockchain(t *testing.T) {
@@ -73,16 +73,20 @@ func execBlockTest(t *testing.T, bt *testMatcher, test *BlockTest) {
 		t.Errorf("test in hash mode without snapshotter failed: %v", err)
 		return
 	}
+
 	if err := bt.checkFailure(t, test.Run(true, rawdb.HashScheme, nil)); err != nil {
 		t.Errorf("test in hash mode with snapshotter failed: %v", err)
 		return
 	}
+
 	if err := bt.checkFailure(t, test.Run(false, rawdb.PathScheme, nil)); err != nil {
 		t.Errorf("test in path mode without snapshotter failed: %v", err)
 		return
 	}
+
 	if err := bt.checkFailure(t, test.Run(true, rawdb.PathScheme, nil)); err != nil {
 		t.Errorf("test in path mode with snapshotter failed: %v", err)
 		return
 	}
+	
 }

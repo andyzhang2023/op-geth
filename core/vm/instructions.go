@@ -260,7 +260,7 @@ func opAddress(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 func opBalance(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	slot := scope.Stack.peek()
 	address := common.Address(slot.Bytes20())
-	slot.SetFromBig(interpreter.evm.StateDB.GetBalance(address))
+	slot.SetFromBig(interpreter.evm.StateDB.GetBalanceOpCode(address))
 	return nil, nil
 }
 
@@ -820,6 +820,7 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	if interpreter.readOnly {
 		return nil, ErrWriteProtection
 	}
+
 	beneficiary := scope.Stack.pop()
 	balance := interpreter.evm.StateDB.GetBalance(scope.Contract.Address())
 	interpreter.evm.StateDB.AddBalance(beneficiary.Bytes20(), balance)

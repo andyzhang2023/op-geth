@@ -480,7 +480,6 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value)
 	}
-
 	// if deposit: skip refunds, skip tipping coinbase
 	// Regolith changes this behaviour to report the actual gasUsed instead of always reporting all gas used.
 	if st.msg.IsDepositTx && !rules.IsOptimismRegolith {
@@ -514,6 +513,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			ReturnData: ret,
 		}, nil
 	}
+
 	effectiveTip := msg.GasPrice
 	if rules.IsLondon {
 		effectiveTip = cmath.BigMin(msg.GasTipCap, new(big.Int).Sub(msg.GasFeeCap, st.evm.Context.BaseFee))
@@ -537,7 +537,6 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			st.state.AddBalance(params.OptimismL1FeeRecipient, cost)
 		}
 	}
-
 	return &ExecutionResult{
 		UsedGas:    st.gasUsed(),
 		Err:        vmerr,
