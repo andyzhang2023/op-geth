@@ -180,6 +180,7 @@ type StateDB struct {
 
 	storeParallelLock sync.RWMutex
 	snapParallelLock  sync.RWMutex // for parallel mode, for main StateDB, slot will read snapshot, while processor will write.
+	trieParallelLock  sync.Mutex   // for parallel mode, for getting states/objects from trie, to handle trie tracer.
 	snapDestructs     map[common.Address]struct{}
 	snapAccounts      map[common.Address][]byte
 	snapStorage       map[common.Address]map[string][]byte
@@ -775,13 +776,29 @@ func (s *StateDB) getStateObjectFromSnapshotOrTrie(addr common.Address) (data *t
 
 	// If snapshot unavailable or reading from it failed, load from the database
 	if data == nil {
-		if s.isParallel && s.parallel.isSlotDB && s.parallel.baseStateDB == nil {
-			return nil, false
+		var trie Trie
+		if s.isParallel {
+			// hold lock for parallel
+			s.trieParallelLock.Lock()
+			defer s.trieParallelLock.Unlock()
+			if s.parallel.isSlotDB {
+				if s.parallel.baseStateDB == nil {
+					return nil, false
+				} else {
+					tr, err := s.parallel.baseStateDB.db.OpenTrie(s.originalRoot)
+					if err != nil {
+						log.Error("Can not openTrie for parallel SlotDB\n")
+						return nil, false
+					}
+					trie = tr
+				}
+			} else {
+				trie = s.trie
+			}
+		} else {
+			trie = s.trie
 		}
-		trie := s.trie
-		if trie == nil && s.parallel.isSlotDB {
-			trie = s.parallel.baseStateDB.trie
-		}
+
 		start := time.Now()
 		var err error
 		data, err = trie.GetAccount(addr)
@@ -796,6 +813,7 @@ func (s *StateDB) getStateObjectFromSnapshotOrTrie(addr common.Address) (data *t
 			return nil, false
 		}
 	}
+
 	return data, true
 }
 
@@ -1274,12 +1292,10 @@ func (s *StateDB) CopyForSlot() *ParallelStateDB {
 	// copy parallel stateObjects
 	s.storeParallelLock.Lock()
 	s.parallel.stateObjects.Range(func(addr any, stateObj any) bool {
-		state.parallel.stateObjects.StoreStateObject(addr.(common.Address), stateObj.(*stateObject).deepCopy(state.getBaseStateDB()))
+		state.parallel.stateObjects.StoreStateObject(addr.(common.Address), stateObj.(*stateObject).lightCopy(state))
 		return true
 	})
-
 	s.storeParallelLock.Unlock()
-
 	if s.snaps != nil {
 		// In order for the miner to be able to use and make additions
 		// to the snapshot tree, we need to copy that as well.
@@ -1429,7 +1445,7 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 // IntermediateRoot computes the current root hash of the state trie.
 // It is called in between transactions to get the root hash that
 // goes into transaction receipts.
-// For parallel SlotDB, the intermediateRoot can be used to calculate the temporary root after executing single tx.
+// TODO: For parallel SlotDB, IntermediateRootForSlot is used, need to clean up this method.
 func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
@@ -1442,11 +1458,15 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// the remainder without, but pre-byzantium even the initial prefetcher is
 	// useless, so no sleep lost.
 	prefetcher := s.prefetcher
+	r := s.originalRoot
 	if s.prefetcher != nil {
 		defer func() {
 			s.prefetcher.close()
 			s.prefetcher = nil
 		}()
+		if s.isParallel {
+			r = s.trie.Hash()
+		}
 	}
 	// Although naively it makes sense to retrieve the account trie and then do
 	// the contract storage and account updates sequentially, that short circuits
@@ -1469,8 +1489,8 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// _untouched_. We can check with the prefetcher, if it can give us a trie
 	// which has the same root, but also has some content loaded into it.
 	// The parallel execution do the change incrementally, so can not check the prefetcher here
-	if s.isParallel == false && prefetcher != nil {
-		if trie := prefetcher.trie(common.Hash{}, s.originalRoot); trie != nil {
+	if prefetcher != nil {
+		if trie := prefetcher.trie(common.Hash{}, r); trie != nil {
 			s.trie = trie
 		}
 	}
@@ -2000,8 +2020,8 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 func (s *StateDB) PrepareForParallel() {
 	s.isParallel = true
 	s.parallel.stateObjects = &StateObjectSyncMap{}
-
 	// copy objects in stateObjects into parallel if not exist.
+	// This is lock free as the PrepareForParallel() is invoked at serial phase.
 	for addr, objPtr := range s.stateObjects {
 		if _, exist := s.parallel.stateObjects.LoadStateObject(addr); !exist {
 			newObj := objPtr.deepCopy(s)

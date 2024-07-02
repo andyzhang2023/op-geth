@@ -570,21 +570,15 @@ func (p *ParallelStateProcessor) confirmTxResults(statedb *state.StateDB, gp *Ga
 
 	resultTxIndex := result.txReq.txIndex
 
-	slotDb := result.slotDB
-
-	// First do finalization and calculate root.
-	slotDb.SetTrie(statedb.GetTrie())
 	var root []byte
 	header := result.txReq.block.Header()
 	if p.config.IsByzantium(header.Number) {
-		result.slotDB.Finalise(true)
+		result.slotDB.FinaliseForParallel(true, statedb)
 	} else {
-		root = result.slotDB.IntermediateRoot(p.config.IsEIP158(header.Number)).Bytes()
+		root = result.slotDB.IntermediateRootForSlotDB(p.config.IsEIP158(header.Number), statedb).Bytes()
 	}
 	result.receipt.PostState = root
-	// Update Trie of mainDB.
-	statedb.SetTrie(slotDb.GetTrie())
-
+	// merge slotDB into mainDB
 	statedb.MergeSlotDB(result.slotDB, result.receipt, resultTxIndex)
 
 	if resultTxIndex != p.mergedTxIndex+1 {
@@ -592,8 +586,7 @@ func (p *ParallelStateProcessor) confirmTxResults(statedb *state.StateDB, gp *Ga
 			"p.mergedTxIndex", p.mergedTxIndex)
 	}
 	p.mergedTxIndex = resultTxIndex
-	// log.Debug("confirmTxResults result is merged", "result.slotIndex", result.slotIndex,
-	//	"TxIndex", result.txReq.txIndex, "p.mergedTxIndex", p.mergedTxIndex)
+
 	return result
 }
 
