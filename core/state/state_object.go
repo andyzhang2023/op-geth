@@ -440,8 +440,6 @@ func (s *stateObject) finalise(prefetch bool) {
 	}
 }
 
-// TODO-david: check correctness!!
-
 // updateTrie is responsible for persisting cached storage changes into the
 // object's storage trie. In case the storage trie is not yet loaded, this
 // function will load the trie automatically. If any issues arise during the
@@ -621,10 +619,6 @@ func (s *stateObject) ReturnGas(gas *big.Int) {}
 
 func (s *stateObject) lightCopy(db *ParallelStateDB) *stateObject {
 	object := newObject(db, s.isParallel, s.address, &s.data)
-	if s.trie != nil {
-		// fixme: no need to copy trie for light copy, since light copied object won't access trie DB
-		object.trie = db.db.CopyTrie(s.trie)
-	}
 	object.code = s.code
 	object.selfDestructed = s.selfDestructed // should be false
 	object.dirtyCode = s.dirtyCode           // it is not used in slot, but keep it is ok
