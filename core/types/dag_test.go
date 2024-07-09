@@ -1,11 +1,12 @@
 package types
 
 import (
+	"testing"
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
-	"testing"
-	"time"
 )
 
 var (

@@ -614,7 +614,7 @@ func (s *StateDB) HasSelfDestructed(addr common.Address) bool {
 func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
 	object := s.GetOrNewStateObject(addr)
 	if object != nil {
-		s.RecordRead(types.AccountStateKey(addr, types.AccountBalance), stateObject.Balance())
+		s.RecordRead(types.AccountStateKey(addr, types.AccountBalance), object.Balance())
 		object.AddBalance(amount)
 		return
 	}
@@ -625,7 +625,7 @@ func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
 func (s *StateDB) SubBalance(addr common.Address, amount *big.Int) {
 	object := s.GetOrNewStateObject(addr)
 	if object != nil {
-		s.RecordRead(types.AccountStateKey(addr, types.AccountBalance), stateObject.Balance())
+		s.RecordRead(types.AccountStateKey(addr, types.AccountBalance), object.Balance())
 		object.SubBalance(amount)
 		return
 	}

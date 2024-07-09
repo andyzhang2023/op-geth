@@ -19,13 +19,13 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"golang.org/x/exp/slices"
 	"io"
 	"math/big"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/opcodeCompiler/compiler"
+	"golang.org/x/exp/slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -235,6 +235,7 @@ func (s *stateObject) empty() bool {
 	}
 	codeHash := s.dbItf.GetCodeHash(s.address)
 	return bytes.Equal(codeHash.Bytes(), emptyCodeHash) // code is empty, the object is empty
+
 }
 
 // newObject creates a state object.
@@ -852,7 +853,7 @@ func (s *stateObject) SetNonce(nonce uint64) {
 	prevNonce := s.dbItf.GetNonce(s.address)
 	s.db.journal.append(nonceChange{
 		account: &s.address,
-		prev:    s.Nonce(),
+		prev:    prevNonce,
 	})
 	s.setNonce(nonce)
 }
