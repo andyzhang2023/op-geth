@@ -24,6 +24,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/opcodeCompiler/compiler"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -233,7 +235,10 @@ func (s *stateObject) empty() bool {
 // newObject creates a state object.
 func newObject(dbItf StateDBer, isParallel bool, address common.Address, acct *types.StateAccount) *stateObject {
 	db := dbItf.getBaseStateDB()
-	origin := acct
+	var (
+		origin  = acct
+		created = acct == nil // true if the account was not existent
+	)
 	if acct == nil {
 		acct = types.NewEmptyStateAccount()
 	}
@@ -248,6 +253,7 @@ func newObject(dbItf StateDBer, isParallel bool, address common.Address, acct *t
 		originStorage:  newStorage(isParallel),
 		pendingStorage: newStorage(isParallel),
 		dirtyStorage:   newStorage(isParallel),
+		created:        created,
 	}
 }
 
@@ -282,7 +288,7 @@ func (s *stateObject) getTrie() (Trie, error) {
 			s.trie = s.db.prefetcher.trie(s.addrHash, s.data.Root)
 		}
 		if s.trie == nil {
-			tr, err := s.db.db.OpenStorageTrie(s.db.originalRoot, s.address, s.data.Root)
+			tr, err := s.db.db.OpenStorageTrie(s.db.originalRoot, s.address, s.data.Root, s.db.trie)
 			if err != nil {
 				return nil, err
 			}
@@ -462,6 +468,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 	var (
 		storage map[common.Hash][]byte
 		origin  map[common.Hash][]byte
+		hasher  = crypto.NewKeccakState()
 	)
 	tr, err := s.getTrie()
 	if err != nil {
@@ -471,6 +478,8 @@ func (s *stateObject) updateTrie() (Trie, error) {
 
 	// Insert all the pending storage updates into the trie
 	usedStorage := make([][]byte, 0, s.pendingStorage.Length())
+	dirtyStorage := make(map[common.Hash][]byte)
+
 	s.pendingStorage.Range(func(keyItf, valueItf interface{}) bool {
 		key := keyItf.(common.Hash)
 		value := valueItf.(common.Hash)
@@ -479,55 +488,78 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		if value == originalValue {
 			return true
 		}
-		prev, _ := s.originStorage.GetValue(key)
-		s.originStorage.StoreValue(key, value)
-
-		var encoded []byte // rlp-encoded value to be used by the snapshot
-		if (value == common.Hash{}) {
-			if err := tr.DeleteStorage(s.address, key[:]); err != nil {
-				s.db.setError(err)
-			}
-			s.db.StorageDeleted += 1
-		} else {
-			// Encoding []byte cannot fail, ok to ignore the error.
-			trimmed := common.TrimLeftZeroes(value[:])
-			encoded, _ = rlp.EncodeToBytes(trimmed)
-			if err := tr.UpdateStorage(s.address, key[:], trimmed); err != nil {
-				s.db.setError(err)
-			}
-			s.db.StorageUpdated += 1
+		var v []byte
+		if value != (common.Hash{}) {
+			value := value
+			v = common.TrimLeftZeroes(value[:])
 		}
-		// Cache the mutated storage slots until commit
-		if storage == nil {
-			if storage = s.db.storages[s.addrHash]; storage == nil {
-				storage = make(map[common.Hash][]byte)
-				s.db.storages[s.addrHash] = storage
-			}
-		}
-		khash := crypto.HashData(s.db.hasher, key[:])
-		storage[khash] = encoded // encoded will be nil if it's deleted
-
-		// Cache the original value of mutated storage slots
-		if origin == nil {
-			if origin = s.db.storagesOrigin[s.address]; origin == nil {
-				origin = make(map[common.Hash][]byte)
-				s.db.storagesOrigin[s.address] = origin
-			}
-		}
-		// Track the original value of slot only if it's mutated first time
-		if _, ok := origin[khash]; !ok {
-			if prev == (common.Hash{}) {
-				origin[khash] = nil // nil if it was not present previously
-			} else {
-				// Encoding []byte cannot fail, ok to ignore the error.
-				b, _ := rlp.EncodeToBytes(common.TrimLeftZeroes(prev[:]))
-				origin[khash] = b
-			}
-		}
-		// Cache the items for preloading
-		usedStorage = append(usedStorage, common.CopyBytes(key[:])) // Copy needed for closure
+		dirtyStorage[key] = v
 		return true
 	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for key, value := range dirtyStorage {
+			if len(value) == 0 {
+				if err := tr.DeleteStorage(s.address, key[:]); err != nil {
+					s.db.setError(err)
+				}
+				s.db.StorageDeleted += 1
+			} else {
+				if err := tr.UpdateStorage(s.address, key[:], value); err != nil {
+					s.db.setError(err)
+				}
+				s.db.StorageUpdated += 1
+			}
+			// Cache the items for preloading
+			usedStorage = append(usedStorage, common.CopyBytes(key[:]))
+		}
+	}()
+	// If state snapshotting is active, cache the data til commit
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.db.StorageMux.Lock()
+		// The snapshot storage map for the object
+		storage = s.db.storages[s.addrHash]
+		if storage == nil {
+			storage = make(map[common.Hash][]byte, len(dirtyStorage))
+			s.db.storages[s.addrHash] = storage
+		}
+		// Cache the original value of mutated storage slots
+		origin = s.db.storagesOrigin[s.address]
+		if origin == nil {
+			origin = make(map[common.Hash][]byte)
+			s.db.storagesOrigin[s.address] = origin
+		}
+		s.db.StorageMux.Unlock()
+		for key, value := range dirtyStorage {
+			khash := crypto.HashData(hasher, key[:])
+
+			// rlp-encoded value to be used by the snapshot
+			var encoded []byte
+			if len(value) != 0 {
+				encoded, _ = rlp.EncodeToBytes(value)
+			}
+			storage[khash] = encoded // encoded will be nil if it's deleted
+
+			// Track the original value of slot only if it's mutated first time
+			prev, _ := s.originStorage.GetValue(key)
+			s.originStorage.StoreValue(key, common.BytesToHash(value)) // fill back left zeroes by BytesToHash
+			if _, ok := origin[khash]; !ok {
+				if prev == (common.Hash{}) {
+					origin[khash] = nil // nil if it was not present previously
+				} else {
+					// Encoding []byte cannot fail, ok to ignore the error.
+					b, _ := rlp.EncodeToBytes(common.TrimLeftZeroes(prev[:]))
+					origin[khash] = b
+				}
+			}
+		}
+	}()
+	wg.Wait()
+
 	if s.db.prefetcher != nil {
 		s.db.prefetcher.used(s.addrHash, s.data.Root, usedStorage)
 	}
@@ -538,6 +570,13 @@ func (s *stateObject) updateTrie() (Trie, error) {
 // updateRoot flushes all cached storage mutations to trie, recalculating the
 // new storage trie root.
 func (s *stateObject) updateRoot() {
+	// If node runs in no trie mode, set root to empty.
+	defer func() {
+		if s.db.db.NoTries() {
+			s.data.Root = types.EmptyRootHash
+		}
+	}()
+
 	// Flush cached storage mutations into trie, short circuit if any error
 	// is occurred or there is not change in the trie.
 	tr, err := s.updateTrie()
@@ -747,6 +786,7 @@ func (s *stateObject) setCode(codeHash common.Hash, code []byte) {
 	s.code = code
 	s.data.CodeHash = codeHash[:]
 	s.dirtyCode = true
+	compiler.GenOrLoadOptimizedCode(codeHash, s.code)
 }
 
 func (s *stateObject) SetNonce(nonce uint64) {

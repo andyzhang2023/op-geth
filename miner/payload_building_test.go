@@ -39,6 +39,7 @@ func TestBuildPayload(t *testing.T) {
 }
 
 func testBuildPayload(t *testing.T, noTxPool, interrupt bool) {
+	t.Parallel()
 	var (
 		db        = rawdb.NewMemoryDatabase()
 		recipient = common.HexToAddress("0xdeadbeef")
@@ -52,6 +53,8 @@ func testBuildPayload(t *testing.T, noTxPool, interrupt bool) {
 		// definitely be visible.
 		txs := genTxs(1, numInterruptTxs)
 		b.txPool.Add(txs, true, false)
+		// we wait for the txs to be promoted
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	timestamp := uint64(time.Now().Unix())
@@ -134,6 +137,7 @@ func genTxs(startNonce, count uint64) types.Transactions {
 }
 
 func TestPayloadId(t *testing.T) {
+	t.Parallel()
 	ids := make(map[string]int)
 	for i, tt := range []*BuildPayloadArgs{
 		{
