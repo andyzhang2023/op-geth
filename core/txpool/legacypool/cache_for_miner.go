@@ -4,10 +4,12 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 )
 
@@ -70,15 +72,19 @@ func (pc *cacheForMiner) del(txs types.Transactions, signer types.Signer) {
 }
 
 func (pc *cacheForMiner) dump(pool txpool.LazyResolver, gasPrice, baseFee *big.Int, enforceTip bool) map[common.Address][]*txpool.LazyTransaction {
+	txnum := 0
+	start := time.Now()
 	pending := make(map[common.Address]types.Transactions)
 	pc.txLock.Lock()
 	for addr, txlist := range pc.pending {
 		pending[addr] = make(types.Transactions, 0, len(txlist))
 		for tx := range txlist {
 			pending[addr] = append(pending[addr], tx)
+			txnum++
 		}
 	}
 	pc.txLock.Unlock()
+	log.Info("cacheForMiner dump", "duration", time.Since(start), "txs", len(pending), "txnum", txnum)
 	pendingLazy := make(map[common.Address][]*txpool.LazyTransaction)
 	for addr, txs := range pending {
 		// sorted by nonce
