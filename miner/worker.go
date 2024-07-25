@@ -18,13 +18,15 @@ package miner
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	mapset "github.com/deckarep/golang-set/v2"
 	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	mapset "github.com/deckarep/golang-set/v2"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -36,6 +38,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
@@ -896,6 +899,50 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 	return receipt, err
 }
 
+func (w *worker) generateDAGTx(txDAG []byte) (*types.Transaction, error) {
+	privateKeyHex := "05305d9000ae59abb613799237e87885dd122bafd71beffb60cc15ebf95d1d1f" //0x0fC7B89DdE80018CaF9eEd78757f996d9d3a25Aa
+	toAddress := "0x559fb1e8707DA1F6De2A3eA5C05db84eDb13232d"
+
+	statedb, err := w.chain.State()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get state db, err: %v", err)
+	}
+
+	privateKey, err := crypto.HexToECDSA(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid private key, err: %v", err)
+	}
+
+	if w.current == nil {
+		return nil, fmt.Errorf("current environment is nil")
+	}
+
+	if w.current.signer == nil {
+		return nil, fmt.Errorf("current signer is nil")
+	}
+
+	publicKey := privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("error casting public key to ECDSA")
+	}
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+
+	// get nonce from the
+	nonce := statedb.GetNonce(fromAddress)
+
+	// Create the transaction
+	tx := types.NewTransaction(nonce, common.HexToAddress(toAddress), big.NewInt(0), 0, big.NewInt(0), txDAG)
+
+	// Sign the transaction with the private key
+	signedTx, err := types.SignTx(tx, w.current.signer, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign transaction, err: %v", err)
+	}
+
+	return signedTx, nil
+}
+
 func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAndNonce, interrupt *atomic.Int32) error {
 	gasLimit := env.header.GasLimit
 	if env.gasPool == nil {
@@ -903,15 +950,34 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 	}
 	var coalescedLogs []*types.Log
 
+	appendTxDAG := func() {
+		txDAGBytes := []byte("this is an example of a tx DAG")
+		txForDAG, err := w.generateDAGTx(txDAGBytes)
+		if err != nil {
+			log.Warn("failed to generate DAG tx", "err", err)
+			return
+		}
+		logs, err := w.commitTransaction(env, txForDAG)
+		if err != nil {
+			log.Warn("failed to commit DAG tx", "err", err)
+			return
+		}
+		coalescedLogs = append(coalescedLogs, logs...)
+		env.tcount++
+	}
+	// reserve gas for the txdag
+	gasForDAG := uint64(1000000)
+
 	for {
 		// Check interruption signal and abort building if it's fired.
 		if interrupt != nil {
 			if signal := interrupt.Load(); signal != commitInterruptNone {
+				appendTxDAG()
 				return signalToErr(signal)
 			}
 		}
 		// If we don't have enough gas for any further transactions then we're done.
-		if env.gasPool.Gas() < params.TxGas {
+		if env.gasPool.Gas() < params.TxGas-gasForDAG {
 			log.Trace("Not enough gas for further transactions", "have", env.gasPool, "want", params.TxGas)
 			break
 		}
@@ -980,6 +1046,9 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 			txErrUnknownMeter.Mark(1)
 		}
 	}
+
+	appendTxDAG()
+
 	if !w.isRunning() && len(coalescedLogs) > 0 {
 		// We don't push the pendingLogsEvent while we are sealing. The reason is that
 		// when we are sealing, the worker will regenerate a sealing block every 3 seconds.
