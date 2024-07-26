@@ -18,6 +18,10 @@ const (
 	PlainTxDAGType
 )
 
+var (
+	TXDAGHeader = []byte("TXDAG")
+)
+
 type TxDAG interface {
 	// Type return TxDAG type
 	Type() byte
@@ -77,14 +81,15 @@ func GetTxDAG(block *Block) []byte {
 	// get data from the last tx
 	calldata := txs[txs.Len()-1].Data()
 	if isTxDAG(calldata) {
-		return calldata
+		// trim the header
+		return calldata[len(TXDAGHeader):]
 	}
 	return nil
 }
 
 // check whether the calldata is a TxDAG
 func isTxDAG(data []byte) bool {
-	return true
+	return len(data) >= len(TXDAGHeader) && bytes.Equal(data[:5], TXDAGHeader)
 }
 
 // EmptyTxDAG indicate that execute txs in sequence

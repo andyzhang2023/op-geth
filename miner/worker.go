@@ -1521,7 +1521,7 @@ func (w *worker) generateDAGTx(env *environment) (*types.Transaction, error) {
 	nonce := statedb.GetNonce(fromAddress)
 
 	// Create the transaction
-	tx := types.NewTransaction(nonce, common.HexToAddress(toAddress), big.NewInt(0), 0, big.NewInt(0), txDAGBytes)
+	tx := types.NewTransaction(nonce, common.HexToAddress(toAddress), big.NewInt(0), 0, big.NewInt(0), append(types.TXDAGHeader, txDAGBytes...))
 
 	// Sign the transaction with the private key
 	signedTx, err := types.SignTx(tx, env.signer, privateKey)
