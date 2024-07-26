@@ -27,11 +27,21 @@ import (
 	cmath "github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
 )
 
 // TODO delete after debug performance metrics
 var DebugInnerExecutionDuration time.Duration
+
+var (
+	execTransferAccountFromaddrMintWrite     = metrics.NewRegisteredTimer("exec/transfer/account/fromaddr/mint/write", nil)
+	execTransferAccountFromaddrCheckNonce    = metrics.NewRegisteredTimer("exec/transfer/account/fromaddr/check/nonce", nil)
+	execTransferAccountFromaddrCheckCode     = metrics.NewRegisteredTimer("exec/transfer/account/fromaddr/check/code", nil)
+	execTransferAccountFromaddrGetBalance    = metrics.NewRegisteredTimer("exec/transfer/account/fromaddr/get/balance", nil)
+	execTransferAccountFromaddrSubBalance    = metrics.NewRegisteredTimer("exec/transfer/account/fromaddr/sub/balance", nil)
+	execTransferAccountFromaddrIncreaseNonce = metrics.NewRegisteredTimer("exec/transfer/account/fromaddr/incr/nonce", nil)
+)
 
 // ExecutionResult includes all output after executing given evm
 // message no matter the execution itself is successful or not.
@@ -276,7 +286,10 @@ func (st *StateTransition) buyGas() error {
 			mgval.Add(mgval, blobFee)
 		}
 	}
-	if have, want := st.state.GetBalance(st.msg.From), balanceCheck; have.Cmp(want) < 0 {
+	t0 := time.Now()
+	have, want := st.state.GetBalance(st.msg.From), balanceCheck
+	execTransferAccountFromaddrGetBalance.UpdateSince(t0)
+	if have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From.Hex(), have, want)
 	}
 	if err := st.gp.SubGas(st.msg.GasLimit); err != nil {
@@ -285,7 +298,9 @@ func (st *StateTransition) buyGas() error {
 	st.gasRemaining += st.msg.GasLimit
 
 	st.initialGas = st.msg.GasLimit
+	t0 = time.Now()
 	st.state.SubBalance(st.msg.From, mgval)
+	execTransferAccountFromaddrSubBalance.UpdateSince(t0)
 	return nil
 }
 
@@ -309,7 +324,9 @@ func (st *StateTransition) preCheck() error {
 	msg := st.msg
 	if !msg.SkipAccountChecks {
 		// Make sure this transaction's nonce is correct.
+		t0 := time.Now()
 		stNonce := st.state.GetNonce(msg.From)
+		execTransferAccountFromaddrCheckNonce.UpdateSince(t0)
 		if msgNonce := msg.Nonce; stNonce < msgNonce {
 			return fmt.Errorf("%w: address %v, tx: %d state: %d", ErrNonceTooHigh,
 				msg.From.Hex(), msgNonce, stNonce)
@@ -321,7 +338,9 @@ func (st *StateTransition) preCheck() error {
 				msg.From.Hex(), stNonce)
 		}
 		// Make sure the sender is an EOA
+		t0 = time.Now()
 		codeHash := st.state.GetCodeHash(msg.From)
+		execTransferAccountFromaddrCheckCode.UpdateSince(t0)
 		if codeHash != (common.Hash{}) && codeHash != types.EmptyCodeHash {
 			return fmt.Errorf("%w: address %v, codehash: %s", ErrSenderNoEOA,
 				msg.From.Hex(), codeHash)
@@ -394,7 +413,9 @@ func (st *StateTransition) preCheck() error {
 // nil evm execution result.
 func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	if mint := st.msg.Mint; mint != nil {
+		t0 := time.Now()
 		st.state.AddBalance(st.msg.From, mint)
+		execTransferAccountFromaddrMintWrite.UpdateSince(t0)
 	}
 	snap := st.state.Snapshot()
 
@@ -487,7 +508,9 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(sender, msg.Data, st.gasRemaining, msg.Value)
 	} else {
 		// Increment the nonce for the next transaction
+		t0 := time.Now()
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
+		execTransferAccountFromaddrIncreaseNonce.UpdateSince(t0)
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value)
 	}
 	DebugInnerExecutionDuration += time.Since(start)

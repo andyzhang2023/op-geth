@@ -17,9 +17,12 @@
 package vm
 
 import (
-	"github.com/ethereum/go-ethereum/core/opcodeCompiler/compiler"
 	"math/big"
 	"sync/atomic"
+	"time"
+
+	"github.com/ethereum/go-ethereum/core/opcodeCompiler/compiler"
+	"github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/holiman/uint256"
 
@@ -37,6 +40,11 @@ type (
 	// GetHashFunc returns the n'th block hash in the blockchain
 	// and is used by the BLOCKHASH EVM op code.
 	GetHashFunc func(uint64) common.Hash
+)
+
+var (
+	execTransferAccountFromaddrRead = metrics.NewRegisteredTimer("exec/transfer/account/fromaddr/read", nil)
+	execTransferAccountToaddrRead   = metrics.NewRegisteredTimer("exec/transfer/account/toaddr/read", nil)
 )
 
 func (evm *EVM) precompile(addr common.Address) (PrecompiledContract, bool) {
@@ -200,14 +208,22 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		return nil, gas, ErrDepth
 	}
 	// Fail if we're trying to transfer more than the available balance
-	if value.Sign() != 0 && !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
+	t0 := time.Now()
+	canTransfer := evm.Context.CanTransfer(evm.StateDB, caller.Address(), value)
+	execTransferAccountFromaddrRead.UpdateSince(t0)
+
+	if value.Sign() != 0 && !canTransfer {
 		return nil, gas, ErrInsufficientBalance
 	}
 	snapshot := evm.StateDB.Snapshot()
 	p, isPrecompile := evm.precompile(addr)
 	debug := evm.Config.Tracer != nil
 
-	if !evm.StateDB.Exist(addr) {
+	t0 = time.Now()
+	exists := evm.StateDB.Exist(addr)
+	execTransferAccountToaddrRead.UpdateSince(t0)
+
+	if !exists {
 		if !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
 			if debug {
