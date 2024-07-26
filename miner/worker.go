@@ -899,7 +899,7 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 	return receipt, err
 }
 
-func (w *worker) generateDAGTx(txDAG []byte) (*types.Transaction, error) {
+func (w *worker) generateDAGTx(txDAG []byte, env *environment) (*types.Transaction, error) {
 	privateKeyHex := "05305d9000ae59abb613799237e87885dd122bafd71beffb60cc15ebf95d1d1f" //0x0fC7B89DdE80018CaF9eEd78757f996d9d3a25Aa
 	toAddress := "0x559fb1e8707DA1F6De2A3eA5C05db84eDb13232d"
 
@@ -913,11 +913,7 @@ func (w *worker) generateDAGTx(txDAG []byte) (*types.Transaction, error) {
 		return nil, fmt.Errorf("invalid private key, err: %v", err)
 	}
 
-	if w.current == nil {
-		return nil, fmt.Errorf("current environment is nil")
-	}
-
-	if w.current.signer == nil {
+	if env.signer == nil {
 		return nil, fmt.Errorf("current signer is nil")
 	}
 
@@ -932,10 +928,10 @@ func (w *worker) generateDAGTx(txDAG []byte) (*types.Transaction, error) {
 	nonce := statedb.GetNonce(fromAddress)
 
 	// Create the transaction
-	tx := types.NewTransaction(nonce, common.HexToAddress(toAddress), big.NewInt(0), 0, big.NewInt(0), txDAG)
+	tx := types.NewTransaction(nonce, common.HexToAddress(toAddress), big.NewInt(0), 1000000, big.NewInt(0), txDAG)
 
 	// Sign the transaction with the private key
-	signedTx, err := types.SignTx(tx, w.current.signer, privateKey)
+	signedTx, err := types.SignTx(tx, env.signer, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction, err: %v", err)
 	}
@@ -951,8 +947,9 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 	var coalescedLogs []*types.Log
 
 	appendTxDAG := func() {
+		//@TODO get txDAG data from statedb
 		txDAGBytes := []byte("this is an example of a tx DAG")
-		txForDAG, err := w.generateDAGTx(txDAGBytes)
+		txForDAG, err := w.generateDAGTx(txDAGBytes, env)
 		if err != nil {
 			log.Warn("failed to generate DAG tx", "err", err)
 			return
@@ -966,7 +963,7 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 		env.tcount++
 	}
 	// reserve gas for the txdag
-	gasForDAG := uint64(1000000)
+	// gasForDAG := uint64(1000000)
 
 	for {
 		// Check interruption signal and abort building if it's fired.
@@ -977,7 +974,7 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 			}
 		}
 		// If we don't have enough gas for any further transactions then we're done.
-		if env.gasPool.Gas() < params.TxGas-gasForDAG {
+		if env.gasPool.Gas() < params.TxGas {
 			log.Trace("Not enough gas for further transactions", "have", env.gasPool, "want", params.TxGas)
 			break
 		}
