@@ -67,6 +67,26 @@ func DecodeTxDAG(enc []byte) (TxDAG, error) {
 	}
 }
 
+// GetTxDAG return TxDAG bytes from block if there is any, or return nil if not exist
+// the txDAG is stored in the calldata of the last transaction of the block
+func GetTxDAG(block *Block) []byte {
+	txs := block.Transactions()
+	if txs.Len() <= 0 {
+		return nil
+	}
+	// get data from the last tx
+	calldata := txs[txs.Len()-1].Data()
+	if isTxDAG(calldata) {
+		return calldata
+	}
+	return nil
+}
+
+// check whether the calldata is a TxDAG
+func isTxDAG(data []byte) bool {
+	return true
+}
+
 // EmptyTxDAG indicate that execute txs in sequence
 // It means no transactions or need timely distribute transaction fees
 // it only keep partial serial execution when tx cannot delay the distribution or just execute txs in sequence

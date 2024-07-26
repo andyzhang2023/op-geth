@@ -744,8 +744,10 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		err   error
 	)
 	if p.bc.enableTxDAG {
-		if len(block.TxDAG()) != 0 {
-			txDAG, err = types.DecodeTxDAG(block.TxDAG())
+		// read tx dag from block if exists(the last transaction)
+		txDAGbytes := types.GetTxDAG(block)
+		if len(txDAGbytes) != 0 {
+			txDAG, err = types.DecodeTxDAG(txDAGbytes)
 			if err != nil {
 				return nil, nil, 0, err
 			}
