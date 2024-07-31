@@ -19,6 +19,7 @@ package miner
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"math/big"
 	"sync"
@@ -88,6 +89,9 @@ type Config struct {
 	NewPayloadTimeout time.Duration // The maximum time allowance for creating a new payload
 
 	RollupComputePendingBlock bool // Compute the pending block from tx-pool, instead of copying the latest-block
+
+	ParallelTxDAGSenderPriv *ecdsa.PrivateKey // sender for broadcasting TxDAG transactions, it works only when TxDAG is enabled
+	ParallelTxDAGReceiver   common.Address    // receiver of TxDAG transactions, it works only when TxDAG is enabled
 }
 
 // DefaultConfig contains default settings for miner.

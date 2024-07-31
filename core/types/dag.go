@@ -12,6 +12,10 @@ import (
 	"golang.org/x/exp/slices"
 )
 
+var (
+	TXDAGHeader = []byte("TXDAG")
+)
+
 // TxDAGType Used to extend TxDAG and customize a new DAG structure
 const (
 	EmptyTxDAGType byte = iota
@@ -67,6 +71,27 @@ func DecodeTxDAG(enc []byte) (TxDAG, error) {
 	default:
 		return nil, errors.New("unsupported TxDAG bytes")
 	}
+}
+
+// GetTxDAG return TxDAG bytes from block if there is any, or return nil if not exist
+// the txDAG is stored in the calldata of the last transaction of the block
+func GetTxDAG(block *Block) []byte {
+	txs := block.Transactions()
+	if txs.Len() <= 0 {
+		return nil
+	}
+	// get data from the last tx
+	calldata := txs[txs.Len()-1].Data()
+	if isTxDAG(calldata) {
+		// trim the header
+		return calldata[len(TXDAGHeader):]
+	}
+	return nil
+}
+
+// check whether the calldata is a TxDAG
+func isTxDAG(data []byte) bool {
+	return len(data) >= len(TXDAGHeader) && bytes.Equal(data[:5], TXDAGHeader)
 }
 
 // EmptyTxDAG indicate that execute txs in sequence

@@ -803,7 +803,15 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		txDAG types.TxDAG
 	)
 	if p.bc.enableTxDAG {
-		// TODO(galaio): load TxDAG from block
+		// load TxDAG from block if exists(the last transaction)
+		txDAGbytes := types.GetTxDAG(block)
+		if len(txDAGbytes) != 0 {
+			var err error
+			txDAG, err = types.DecodeTxDAG(txDAGbytes)
+			if err != nil {
+				log.Error("failed to decode txDAG", "block", block.NumberU64(), "err", err)
+			}
+		}
 		// or load cache txDAG from file
 		if txDAG == nil && len(p.bc.txDAGMapping) > 0 {
 			txDAG = p.bc.txDAGMapping[block.NumberU64()]
