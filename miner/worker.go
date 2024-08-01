@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	mapset "github.com/deckarep/golang-set/v2"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -85,10 +87,11 @@ var (
 )
 
 var (
-	errBlockInterruptedByNewHead  = errors.New("new head arrived while building block")
-	errBlockInterruptedByRecommit = errors.New("recommit interrupt while building block")
-	errBlockInterruptedByTimeout  = errors.New("timeout while building block")
-	errBlockInterruptedByResolve  = errors.New("payload resolution while building block")
+	errBlockInterruptedByNewHead      = errors.New("new head arrived while building block")
+	errBlockInterruptedByRecommit     = errors.New("recommit interrupt while building block")
+	errBlockInterruptedByTimeout      = errors.New("timeout while building block")
+	errBlockInterruptedByResolve      = errors.New("payload resolution while building block")
+	errBlockInterruptedByBundleCommit = errors.New("failed bundle commit while building block")
 )
 
 var (
@@ -116,6 +119,9 @@ type environment struct {
 	receipts []*types.Receipt
 	sidecars []*types.BlobTxSidecar
 	blobs    int
+
+	profit       *big.Int
+	UnRevertible mapset.Set[common.Hash]
 }
 
 // copy creates a deep copy of environment.
@@ -127,6 +133,7 @@ func (env *environment) copy() *environment {
 		coinbase: env.coinbase,
 		header:   types.CopyHeader(env.header),
 		receipts: copyReceipts(env.receipts),
+		profit:   big.NewInt(0),
 	}
 	if env.gasPool != nil {
 		gasPool := *env.gasPool
@@ -165,6 +172,7 @@ const (
 	commitInterruptResubmit
 	commitInterruptTimeout
 	commitInterruptResolve
+	commitInterruptBundleCommit
 )
 
 // newWorkReq represents a request for new sealing work submitting with relative interrupt notifier.
@@ -263,6 +271,9 @@ type worker struct {
 	skipSealHook func(*task) bool                   // Method to decide whether skipping the sealing.
 	fullTaskHook func()                             // Method to call before pushing the full sealing task.
 	resubmitHook func(time.Duration, time.Duration) // Method to call upon updating resubmitting interval.
+
+	// MEV
+	bundleCache *BundleCache
 }
 
 func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus.Engine, eth Backend, mux *event.TypeMux, isLocalBlock func(header *types.Header) bool, init bool) *worker {
@@ -287,6 +298,7 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 		exitCh:             make(chan struct{}),
 		resubmitIntervalCh: make(chan time.Duration),
 		resubmitAdjustCh:   make(chan *intervalAdjust, resubmitAdjustChanSize),
+		bundleCache:        NewBundleCache(),
 	}
 	// Subscribe for transaction insertion events (whether from network or resurrects)
 	worker.txsSub = eth.TxPool().SubscribeTransactions(worker.txsCh, true)
@@ -794,6 +806,7 @@ func (w *worker) makeEnv(parent *types.Header, header *types.Header, coinbase co
 		state:    state,
 		coinbase: coinbase,
 		header:   header,
+		profit:   big.NewInt(0),
 	}
 	// Keep track of transactions which return errors so they can be removed
 	env.tcount = 0
@@ -826,6 +839,30 @@ func (w *worker) commitTransaction(env *environment, tx *types.Transaction) ([]*
 	}
 	env.txs = append(env.txs, tx)
 	env.receipts = append(env.receipts, receipt)
+	if w.config.Mev.MevEnabled {
+		minerFee, _ := tx.EffectiveGasTip(env.header.BaseFee)
+		env.profit.Add(env.profit, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), minerFee))
+	}
+	return receipt.Logs, nil
+}
+
+func (w *worker) commitBundleTransaction(env *environment, tx *types.Transaction, unRevertible bool) ([]*types.Log, error) {
+	if tx.Type() == types.BlobTxType {
+		return w.commitBlobTransaction(env, tx)
+	}
+	receipt, err := w.applyTransaction(env, tx)
+	if err != nil {
+		return nil, err
+	}
+	if receipt.Status == types.ReceiptStatusFailed && unRevertible {
+		return nil, errors.New("no revertible transaction failed")
+	}
+	env.txs = append(env.txs, tx)
+	env.receipts = append(env.receipts, receipt)
+	if w.config.Mev.MevEnabled {
+		minerFee, _ := tx.EffectiveGasTip(env.header.BaseFee)
+		env.profit.Add(env.profit, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), minerFee))
+	}
 	return receipt.Logs, nil
 }
 
@@ -1280,17 +1317,43 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 		timer := time.AfterFunc(w.newpayloadTimeout, func() {
 			interrupt.Store(commitInterruptTimeout)
 		})
-
-		err := w.fillTransactions(interrupt, work)
-		timer.Stop() // don't need timeout interruption any more
-		if errors.Is(err, errBlockInterruptedByTimeout) {
-			log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout), "parentHash", genParams.parentHash)
-			isBuildBlockInterruptCounter.Inc(1)
-		} else if errors.Is(err, errBlockInterruptedByResolve) {
-			log.Info("Block building got interrupted by payload resolution", "parentHash", genParams.parentHash)
-			isBuildBlockInterruptCounter.Inc(1)
+		if w.config.Mev.MevEnabled {
+			newWork := work.copy()
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := w.fillTransactionsAndBundles(interrupt, newWork)
+				if errors.Is(err, errBlockInterruptedByBundleCommit) {
+					log.Error("fillTransactionsAndBundles is interrupted", "err", err)
+				}
+			}()
+			err := w.fillTransactions(interrupt, work)
+			timer.Stop() // don't need timeout interruption any more
+			if errors.Is(err, errBlockInterruptedByTimeout) {
+				log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout), "parentHash", genParams.parentHash)
+				isBuildBlockInterruptCounter.Inc(1)
+			} else if errors.Is(err, errBlockInterruptedByResolve) {
+				log.Info("Block building got interrupted by payload resolution", "parentHash", genParams.parentHash)
+				isBuildBlockInterruptCounter.Inc(1)
+			}
+			wg.Wait()
+			if newWork.profit.Cmp(work.profit) > 0 {
+				work = newWork
+			}
+		} else {
+			err := w.fillTransactions(interrupt, work)
+			timer.Stop() // don't need timeout interruption any more
+			if errors.Is(err, errBlockInterruptedByTimeout) {
+				log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout), "parentHash", genParams.parentHash)
+				isBuildBlockInterruptCounter.Inc(1)
+			} else if errors.Is(err, errBlockInterruptedByResolve) {
+				log.Info("Block building got interrupted by payload resolution", "parentHash", genParams.parentHash)
+				isBuildBlockInterruptCounter.Inc(1)
+			}
 		}
 	}
+
 	if intr := genParams.interrupt; intr != nil && genParams.isUpdate && intr.Load() != commitInterruptNone {
 		return &newPayloadResult{err: errInterruptedUpdate}
 	}
@@ -1329,10 +1392,15 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 	innerExecutionTimer.Update(core.DebugInnerExecutionDuration)
 
 	log.Debug("build payload statedb metrics", "parentHash", genParams.parentHash, "accountReads", common.PrettyDuration(work.state.AccountReads), "storageReads", common.PrettyDuration(work.state.StorageReads), "snapshotAccountReads", common.PrettyDuration(work.state.SnapshotAccountReads), "snapshotStorageReads", common.PrettyDuration(work.state.SnapshotStorageReads), "accountUpdates", common.PrettyDuration(work.state.AccountUpdates), "storageUpdates", common.PrettyDuration(work.state.StorageUpdates), "accountHashes", common.PrettyDuration(work.state.AccountHashes), "storageHashes", common.PrettyDuration(work.state.StorageHashes))
-
+	fees := big.NewInt(0)
+	if w.config.Mev.MevEnabled {
+		fees = work.profit
+	} else {
+		fees = totalFees(block, work.receipts)
+	}
 	return &newPayloadResult{
 		block:    block,
-		fees:     totalFees(block, work.receipts),
+		fees:     fees,
 		sidecars: work.sidecars,
 		env:      work,
 	}
@@ -1506,6 +1574,8 @@ func signalToErr(signal int32) error {
 		return errBlockInterruptedByTimeout
 	case commitInterruptResolve:
 		return errBlockInterruptedByResolve
+	case commitInterruptBundleCommit:
+		return errBlockInterruptedByBundleCommit
 	default:
 		panic(fmt.Errorf("undefined signal %d", signal))
 	}

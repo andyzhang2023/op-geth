@@ -19,10 +19,11 @@ package core
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/core/state"
 	"math"
 	"math/big"
 	"time"
+
+	"github.com/ethereum/go-ethereum/core/state"
 
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
@@ -259,7 +260,11 @@ func (st *StateTransition) buyGas() error {
 	mgval = mgval.Mul(mgval, st.msg.GasPrice)
 	var l1Cost *big.Int
 	if st.evm.Context.L1CostFunc != nil && !st.msg.SkipAccountChecks {
-		l1Cost = st.evm.Context.L1CostFunc(st.msg.RollupCostData, st.evm.Context.Time)
+		if st.msg.GasPrice.Cmp(big.NewInt(0)) == 0 && st.evm.ChainConfig().IsWright(st.evm.Context.Time) {
+			l1Cost = big.NewInt(0)
+		} else {
+			l1Cost = st.evm.Context.L1CostFunc(st.msg.RollupCostData, st.evm.Context.Time)
+		}
 		if l1Cost != nil {
 			mgval = mgval.Add(mgval, l1Cost)
 		}
@@ -579,11 +584,17 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		} else {
 			st.state.AddBalance(params.OptimismBaseFeeRecipient, fee)
 		}
-		if cost := st.evm.Context.L1CostFunc(st.msg.RollupCostData, st.evm.Context.Time); cost != nil {
+		var l1Cost *big.Int
+		if st.msg.GasPrice.Cmp(big.NewInt(0)) == 0 && st.evm.ChainConfig().IsWright(st.evm.Context.Time) {
+			l1Cost = big.NewInt(0)
+		} else {
+			l1Cost = st.evm.Context.L1CostFunc(st.msg.RollupCostData, st.evm.Context.Time)
+		}
+		if l1Cost != nil {
 			if st.delayGasFee {
-				l1Fee = cost
+				l1Fee = l1Cost
 			} else {
-				st.state.AddBalance(params.OptimismL1FeeRecipient, cost)
+				st.state.AddBalance(params.OptimismL1FeeRecipient, l1Cost)
 			}
 		}
 	}
