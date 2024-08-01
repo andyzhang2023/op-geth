@@ -840,8 +840,11 @@ func (w *worker) commitTransaction(env *environment, tx *types.Transaction) ([]*
 	env.txs = append(env.txs, tx)
 	env.receipts = append(env.receipts, receipt)
 	if w.config.Mev.MevEnabled {
-		minerFee, _ := tx.EffectiveGasTip(env.header.BaseFee)
-		env.profit.Add(env.profit, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), minerFee))
+		effectiveTip, _ := tx.EffectiveGasTip(env.header.BaseFee)
+		if !w.chainConfig.IsWright(env.header.Time) && env.header.BaseFee != nil {
+			effectiveTip.Add(effectiveTip, env.header.BaseFee)
+		}
+		env.profit.Add(env.profit, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), effectiveTip))
 	}
 	return receipt.Logs, nil
 }
@@ -860,8 +863,11 @@ func (w *worker) commitBundleTransaction(env *environment, tx *types.Transaction
 	env.txs = append(env.txs, tx)
 	env.receipts = append(env.receipts, receipt)
 	if w.config.Mev.MevEnabled {
-		minerFee, _ := tx.EffectiveGasTip(env.header.BaseFee)
-		env.profit.Add(env.profit, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), minerFee))
+		effectiveTip, _ := tx.EffectiveGasTip(env.header.BaseFee)
+		if !w.chainConfig.IsWright(env.header.Time) && env.header.BaseFee != nil {
+			effectiveTip.Add(effectiveTip, env.header.BaseFee)
+		}
+		env.profit.Add(env.profit, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), effectiveTip))
 	}
 	return receipt.Logs, nil
 }
@@ -1324,8 +1330,8 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 			go func() {
 				defer wg.Done()
 				err := w.fillTransactionsAndBundles(interrupt, newWork)
-				if errors.Is(err, errBlockInterruptedByBundleCommit) {
-					log.Error("fillTransactionsAndBundles is interrupted", "err", err)
+				if err != nil && (!(errors.Is(err, errBlockInterruptedByTimeout) || errors.Is(err, errBlockInterruptedByResolve))) {
+					log.Warn("fillTransactionsAndBundles is interrupted", "err", err)
 				}
 			}()
 			err := w.fillTransactions(interrupt, work)
@@ -1393,7 +1399,7 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 
 	log.Debug("build payload statedb metrics", "parentHash", genParams.parentHash, "accountReads", common.PrettyDuration(work.state.AccountReads), "storageReads", common.PrettyDuration(work.state.StorageReads), "snapshotAccountReads", common.PrettyDuration(work.state.SnapshotAccountReads), "snapshotStorageReads", common.PrettyDuration(work.state.SnapshotStorageReads), "accountUpdates", common.PrettyDuration(work.state.AccountUpdates), "storageUpdates", common.PrettyDuration(work.state.StorageUpdates), "accountHashes", common.PrettyDuration(work.state.AccountHashes), "storageHashes", common.PrettyDuration(work.state.StorageHashes))
 	fees := big.NewInt(0)
-	if w.config.Mev.MevEnabled {
+	if w.config.Mev.MevEnabled && w.chainConfig.IsWright(block.Time()) {
 		fees = work.profit
 	} else {
 		fees = totalFees(block, work.receipts)

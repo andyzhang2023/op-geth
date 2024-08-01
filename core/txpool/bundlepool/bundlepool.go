@@ -36,8 +36,10 @@ const (
 )
 
 var (
-	bundleGauge = metrics.NewRegisteredGauge("bundlepool/bundles", nil)
-	slotsGauge  = metrics.NewRegisteredGauge("bundlepool/slots", nil)
+	bundleGauge         = metrics.NewRegisteredGauge("bundlepool/bundles", nil)
+	slotsGauge          = metrics.NewRegisteredGauge("bundlepool/slots", nil)
+	bundleDeliverAll    = metrics.NewRegisteredCounter("bundle/deliver/all", nil)
+	bundleDeliverFailed = metrics.NewRegisteredCounter("bundle/deliver/failed", nil)
 )
 
 var (
@@ -88,8 +90,6 @@ type BundlePool struct {
 	simulator BundleSimulator
 
 	bundleReceiverClients map[string]*rpc.Client
-	deliverBundleCh       chan *types.SendBundleArgs
-	exitCh                chan struct{}
 }
 
 func New(config Config, mevConfig miner.MevConfig) *BundlePool {
@@ -102,8 +102,6 @@ func New(config Config, mevConfig miner.MevConfig) *BundlePool {
 		bundles:               make(map[common.Hash]*types.Bundle),
 		bundleHeap:            make(BundleHeap, 0),
 		bundleReceiverClients: make(map[string]*rpc.Client),
-		deliverBundleCh:       make(chan *types.SendBundleArgs),
-		exitCh:                make(chan struct{}),
 	}
 	if pool.mevConfig.MevReceivers == nil {
 		return pool
@@ -114,31 +112,8 @@ func New(config Config, mevConfig miner.MevConfig) *BundlePool {
 	if len(pool.bundleReceiverClients) == 0 {
 		log.Error("No valid bundleReceivers")
 	}
-	go pool.deliverLoop()
 
 	return pool
-}
-
-func (p *BundlePool) deliverLoop() {
-	for {
-		select {
-		case bundle := <-p.deliverBundleCh:
-			for url, cli := range p.bundleReceiverClients {
-				cli := cli
-				url := url
-				go func() {
-					var hash common.Hash
-					err := cli.CallContext(context.Background(), &hash, "eth_sendBundle", *bundle)
-					if err != nil {
-						log.Error("failed to deliver bundle to receiver", "url", url, "err", err)
-					}
-				}()
-			}
-		case <-p.exitCh:
-			log.Warn("the deliverBundleCh is closed")
-			return
-		}
-	}
 }
 
 func (p *BundlePool) register(url string) {
@@ -194,7 +169,7 @@ func (p *BundlePool) AddBundle(bundle *types.Bundle, originBundle *types.SendBun
 		return err
 	}
 
-	if price.Cmp(p.minimalBundleGasPrice()) < 0 && p.slots+numSlots(bundle) > p.config.GlobalSlots {
+	if price.Cmp(p.minimalBundleGasPrice()) <= 0 && p.slots+numSlots(bundle) > p.config.GlobalSlots {
 		return ErrBundleGasPriceLow
 	}
 	bundle.Price = price
@@ -207,8 +182,18 @@ func (p *BundlePool) AddBundle(bundle *types.Bundle, originBundle *types.SendBun
 		return ErrBundleAlreadyExist
 	}
 
-	if len(p.bundleReceiverClients) != 0 {
-		p.deliverBundleCh <- originBundle
+	for url, cli := range p.bundleReceiverClients {
+		cli := cli
+		url := url
+		go func() {
+			var hash common.Hash
+			err := cli.CallContext(context.Background(), &hash, "eth_sendBundle", *originBundle)
+			if err != nil {
+				bundleDeliverFailed.Inc(1)
+				log.Error("failed to deliver bundle to receiver", "url", url, "err", err)
+			}
+		}()
+		bundleDeliverAll.Inc(1)
 	}
 
 	for p.slots+numSlots(bundle) > p.config.GlobalSlots {
@@ -382,6 +367,8 @@ func (p *BundlePool) reset(newHead *types.Header) {
 			delete(p.bundles, hash)
 		}
 	}
+	bundleGauge.Update(int64(len(p.bundles)))
+	slotsGauge.Update(int64(p.slots))
 }
 
 // deleteBundle deletes a bundle from the pool.
@@ -397,8 +384,6 @@ func (p *BundlePool) deleteBundle(hash common.Hash) {
 
 // drop removes the bundle with the lowest gas price from the pool.
 func (p *BundlePool) drop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	for len(p.bundleHeap) > 0 {
 		// Pop the bundle with the lowest gas price
 		// the min element in the heap may not exist in the pool as it may be pruned
