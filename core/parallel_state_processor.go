@@ -811,6 +811,9 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			if err != nil {
 				log.Error("failed to decode txDAG", "block", block.NumberU64(), "err", err)
 			}
+			if txDAG != nil {
+				log.Debug("load tx dag from block", "blockNumber", block.NumberU64(), "txCount", txDAG.TxCount())
+			}
 		}
 		// or load cache txDAG from file
 		if txDAG == nil && len(p.bc.txDAGMapping) > 0 {
