@@ -1034,9 +1034,6 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 
 // generateDAGTx generates a DAG transaction for the block
 func (w *worker) generateDAGTx(signer types.Signer, txIndex int, coinbase common.Address) (*types.Transaction, error) {
-	// @TODO this is a placeholder for the txDAG transaction sender
-	// privateKeyHex := "05305d9000ae59abb613799237e87885dd122bafd71beffb60cc15ebf95d1d1f" //0x0fC7B89DdE80018CaF9eEd78757f996d9d3a25Aa
-	// toAddress := "0x559fb1e8707DA1F6De2A3eA5C05db84eDb13232d"
 
 	statedb, err := w.chain.State()
 	if err != nil {
@@ -1079,7 +1076,7 @@ func (w *worker) generateDAGTx(signer types.Signer, txIndex int, coinbase common
 	nonce := statedb.GetNonce(fromAddress)
 
 	// Create the transaction
-	tx := types.NewTransaction(nonce, TxDAGReceiver, big.NewInt(0), 10000, big.NewInt(0), append(types.TXDAGHeader, txDAGBytes...))
+	tx := types.NewTransaction(nonce, TxDAGReceiver, big.NewInt(0), 21100, big.NewInt(0), append(types.TXDAGHeader, txDAGBytes...))
 
 	// Sign the transaction with the private key
 	signedTx, err := types.SignTx(tx, signer, sender)
