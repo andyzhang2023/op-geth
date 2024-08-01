@@ -1036,7 +1036,7 @@ func (w *worker) generateDAGTx(signer types.Signer, txIndex int, coinbase common
 	nonce := statedb.GetNonce(fromAddress)
 
 	// Create the transaction
-	tx := types.NewTransaction(nonce, TxDAGReceiver, big.NewInt(0), 0, big.NewInt(0), append(types.TXDAGHeader, txDAGBytes...))
+	tx := types.NewTransaction(nonce, TxDAGReceiver, big.NewInt(0), 10000, big.NewInt(0), append(types.TXDAGHeader, txDAGBytes...))
 
 	// Sign the transaction with the private key
 	signedTx, err := types.SignTx(tx, signer, sender)
