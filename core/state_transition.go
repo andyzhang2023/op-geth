@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/objs"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -256,7 +257,8 @@ func (st *StateTransition) to() common.Address {
 }
 
 func (st *StateTransition) buyGas() error {
-	mgval := new(big.Int).SetUint64(st.msg.GasLimit)
+	mgval := objs.BigIntPool.Get().(*big.Int).SetUint64(st.msg.GasLimit)
+	defer objs.BigIntPool.Put(mgval)
 	mgval = mgval.Mul(mgval, st.msg.GasPrice)
 	var l1Cost *big.Int
 	if st.evm.Context.L1CostFunc != nil && !st.msg.SkipAccountChecks {
@@ -265,7 +267,8 @@ func (st *StateTransition) buyGas() error {
 			mgval = mgval.Add(mgval, l1Cost)
 		}
 	}
-	balanceCheck := new(big.Int).Set(mgval)
+	balanceCheck := objs.BigIntPool.Get().(*big.Int).Set(mgval)
+	defer objs.BigIntPool.Put(balanceCheck)
 	if st.msg.GasFeeCap != nil {
 		balanceCheck.SetUint64(st.msg.GasLimit)
 		balanceCheck = balanceCheck.Mul(balanceCheck, st.msg.GasFeeCap)
@@ -277,7 +280,8 @@ func (st *StateTransition) buyGas() error {
 	if st.evm.ChainConfig().IsCancun(st.evm.Context.BlockNumber, st.evm.Context.Time) {
 		if blobGas := st.blobGasUsed(); blobGas > 0 {
 			// Check that the user has enough funds to cover blobGasUsed * tx.BlobGasFeeCap
-			blobBalanceCheck := new(big.Int).SetUint64(blobGas)
+			blobBalanceCheck := objs.BigIntPool.Get().(*big.Int).SetUint64(blobGas)
+			defer objs.BigIntPool.Put(blobBalanceCheck)
 			blobBalanceCheck.Mul(blobBalanceCheck, st.msg.BlobGasFeeCap)
 			balanceCheck.Add(balanceCheck, blobBalanceCheck)
 			// Pay for blobGasUsed * actual blob fee
