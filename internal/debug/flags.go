@@ -25,7 +25,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+<<<<<<< Updated upstream
 	"time"
+=======
+	"runtime/debug"
+>>>>>>> Stashed changes
 
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/log"
@@ -126,6 +130,12 @@ var (
 		Value:    false,
 		Category: flags.LoggingCategory,
 	}
+	gcMemlimitFlag = &cli.IntFlag{
+		Name:     "gc.memlimit",
+		Usage:    "limit Mbytes if the memory reached, a gc will be triggered , it sets GOGC=off",
+		Value:    0,
+		Category: flags.LoggingCategory,
+	}
 	pprofFlag = &cli.BoolFlag{
 		Name:     "pprof",
 		Usage:    "Enable the pprof HTTP server",
@@ -179,6 +189,7 @@ var Flags = []cli.Flag{
 	logMaxBackupsFlag,
 	logMaxAgeFlag,
 	logCompressFlag,
+	gcMemlimitFlag,
 	pprofFlag,
 	pprofAddrFlag,
 	pprofPortFlag,
@@ -336,6 +347,9 @@ func Setup(ctx *cli.Context) error {
 		// It cannot be imported because it will cause a cyclical dependency.
 		StartPProf(address, !ctx.IsSet("metrics.addr"))
 	}
+	if ctx.Int(gcMemlimitFlag.Name) > 0 {
+		EnableGCManual(ctx.Int(gcMemlimitFlag.Name))
+	}
 	if len(logFile) > 0 || rotation {
 		log.Info("Logging configured", context...)
 	}
@@ -365,6 +379,11 @@ func CollectGCStats() {
 
 		time.Sleep(1 * time.Second)
 	}
+}
+
+func EnableGCManual(mb int) {
+	debug.SetGCPercent(-1)
+	debug.SetMemoryLimit(int64(mb) * 1024 * 1024)
 }
 
 func StartPProf(address string, withMetrics bool) {
