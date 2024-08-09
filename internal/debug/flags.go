@@ -127,7 +127,7 @@ var (
 		Value:    false,
 		Category: flags.LoggingCategory,
 	}
-	gcMemlimitFlag = &cli.IntFlag{
+	gcMemlimitFlag = &cli.Int64Flag{
 		Name:     "gc.memlimit",
 		Usage:    "limit Mbytes if the memory reached, a gc will be triggered , it sets GOGC=off",
 		Value:    0,
@@ -345,7 +345,7 @@ func Setup(ctx *cli.Context) error {
 		StartPProf(address, !ctx.IsSet("metrics.addr"))
 	}
 	if ctx.Int(gcMemlimitFlag.Name) > 0 {
-		EnableGCManual(ctx.Int(gcMemlimitFlag.Name))
+		EnableGCManual(ctx.Int64(gcMemlimitFlag.Name))
 	}
 	if len(logFile) > 0 || rotation {
 		log.Info("Logging configured", context...)
@@ -378,9 +378,11 @@ func CollectGCStats() {
 	}
 }
 
-func EnableGCManual(mb int) {
+func EnableGCManual(mb int64) {
+	debug.SetMemoryLimit(mb * 1024 * 1024)
+	log.Info("GC Memory limit set to (MB)", "limit", int64(mb))
 	debug.SetGCPercent(-1)
-	debug.SetMemoryLimit(int64(mb) * 1024 * 1024)
+	log.Info("GOGC=off")
 }
 
 func StartPProf(address string, withMetrics bool) {
