@@ -25,11 +25,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-<<<<<<< Updated upstream
-	"time"
-=======
 	"runtime/debug"
->>>>>>> Stashed changes
+	"time"
 
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/log"
