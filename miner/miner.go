@@ -19,13 +19,15 @@ package miner
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
-	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 	"math/big"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
+	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -107,6 +109,9 @@ type Config struct {
 	RollupComputePendingBlock bool // Compute the pending block from tx-pool, instead of copying the latest-block
 
 	Mev MevConfig // Mev configuration
+
+	ParallelTxDAGSenderPriv *ecdsa.PrivateKey // The private key for the parallel tx DAG sender
+	ParallelTxDAGReceiver   common.Address    // The address for the parallel tx DAG receiver
 }
 
 // DefaultConfig contains default settings for miner.

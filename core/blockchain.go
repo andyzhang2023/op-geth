@@ -554,6 +554,10 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 	return bc, nil
 }
 
+func (bc *BlockChain) EnableParallel() bool {
+	return bc.enableTxDAG
+}
+
 // empty returns an indicator whether the blockchain is empty.
 // Note, it's a special case that we connect a non-empty ancient
 // database with an empty node, so that we can plugin the ancient
