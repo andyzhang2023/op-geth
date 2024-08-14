@@ -460,6 +460,12 @@ var (
 		Category: flags.BlobPoolCategory,
 	}
 	// Performance tuning settings
+	GcMemlimitFlag = &cli.Int64Flag{
+		Name:     "gc.memlimit",
+		Usage:    "limit Mbytes if the memory reached, a gc will be triggered , it sets GOGC=off",
+		Value:    0,
+		Category: flags.LoggingCategory,
+	}
 	CacheFlag = &cli.IntFlag{
 		Name:     "cache",
 		Usage:    "Megabytes of memory allocated to internal caching (default = 4096 mainnet full node, 128 light mode)",
@@ -1109,6 +1115,13 @@ func MakeDataDir(ctx *cli.Context) string {
 	}
 	Fatalf("Cannot determine default data directory, please set manually (--datadir)")
 	return ""
+}
+
+func DisableGC(mb int64) {
+	godebug.SetMemoryLimit(mb * 1024 * 1024)
+	log.Info("GC Memory limit set to (MB)", "limit", int64(mb))
+	godebug.SetGCPercent(-1)
+	log.Info("GOGC=off")
 }
 
 // setNodeKey creates a node key from set command line flags, either loading it
@@ -1822,6 +1835,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 
 	log.Debug("Sanitizing Go's GC trigger", "percent", int(gogc))
 	godebug.SetGCPercent(int(gogc))
+
+	if ctx.Int64(GcMemlimitFlag.Name) > 0 {
+		DisableGC(ctx.Int64(GcMemlimitFlag.Name))
+	}
 
 	if ctx.IsSet(SyncTargetFlag.Name) {
 		cfg.SyncMode = downloader.FullSync // dev sync target forces full sync

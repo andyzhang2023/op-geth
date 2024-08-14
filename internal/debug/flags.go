@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"time"
 
 	"github.com/ethereum/go-ethereum/internal/flags"
@@ -127,12 +126,6 @@ var (
 		Value:    false,
 		Category: flags.LoggingCategory,
 	}
-	gcMemlimitFlag = &cli.Int64Flag{
-		Name:     "gc.memlimit",
-		Usage:    "limit Mbytes if the memory reached, a gc will be triggered , it sets GOGC=off",
-		Value:    0,
-		Category: flags.LoggingCategory,
-	}
 	pprofFlag = &cli.BoolFlag{
 		Name:     "pprof",
 		Usage:    "Enable the pprof HTTP server",
@@ -186,7 +179,6 @@ var Flags = []cli.Flag{
 	logMaxBackupsFlag,
 	logMaxAgeFlag,
 	logCompressFlag,
-	gcMemlimitFlag,
 	pprofFlag,
 	pprofAddrFlag,
 	pprofPortFlag,
@@ -328,12 +320,14 @@ func Setup(ctx *cli.Context) error {
 			return err
 		}
 	}
+	// start a loop to collect gc stats per second
+	// it need metris.Enabled to be shown
+	if ctx.IsSet("metrics.addr") {
+		go CollectGCStats()
+	}
 
 	// pprof server
 	if ctx.Bool(pprofFlag.Name) {
-		// start a loop to collect gc stats per second
-		// it need metris.Enabled to be shown
-		go CollectGCStats()
 
 		listenHost := ctx.String(pprofAddrFlag.Name)
 
@@ -343,9 +337,6 @@ func Setup(ctx *cli.Context) error {
 		// This context value ("metrics.addr") represents the utils.MetricsHTTPFlag.Name.
 		// It cannot be imported because it will cause a cyclical dependency.
 		StartPProf(address, !ctx.IsSet("metrics.addr"))
-	}
-	if ctx.Int(gcMemlimitFlag.Name) > 0 {
-		EnableGCManual(ctx.Int64(gcMemlimitFlag.Name))
 	}
 	if len(logFile) > 0 || rotation {
 		log.Info("Logging configured", context...)
@@ -376,13 +367,6 @@ func CollectGCStats() {
 
 		time.Sleep(1 * time.Second)
 	}
-}
-
-func EnableGCManual(mb int64) {
-	debug.SetMemoryLimit(mb * 1024 * 1024)
-	log.Info("GC Memory limit set to (MB)", "limit", int64(mb))
-	debug.SetGCPercent(-1)
-	log.Info("GOGC=off")
 }
 
 func StartPProf(address string, withMetrics bool) {

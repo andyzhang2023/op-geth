@@ -111,6 +111,7 @@ var (
 		utils.EthRequiredBlocksFlag,
 		utils.LegacyWhitelistFlag, // deprecated
 		utils.BloomFilterSizeFlag,
+		utils.GcMemlimitFlag,
 		utils.CacheFlag,
 		utils.CacheDatabaseFlag,
 		utils.CacheTrieFlag,
