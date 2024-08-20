@@ -867,7 +867,12 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 	}
 	var coalescedLogs []*types.Log
 
+	blockTxLimit := 15000
+
 	for {
+		if env.tcount >= blockTxLimit {
+			break
+		}
 		// Check interruption signal and abort building if it's fired.
 		if interrupt != nil {
 			if signal := interrupt.Load(); signal != commitInterruptNone {
