@@ -10,6 +10,11 @@ func TestParallelStateScheduleRun(t *testing.T) {
 	// case 1: empty txs
 	// case 2: txs with no dependencies, no conflicts
 	// case 3: txs with no dependencies, with 1 conflict
+
+	// mock a state db,which provide:
+	// KV read/write (in memory)
+	// State read/write (in memory) ?
+	// Trie read/write (in memory) ?
 }
 
 func TestNewTxLevels(t *testing.T) {
