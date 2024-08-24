@@ -3,14 +3,15 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/log"
 	"math/big"
 	"runtime"
 	"sort"
 	"sync"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const defaultNumOfSlots = 100
@@ -34,6 +35,21 @@ var parallelKvCheckResCh chan bool
 
 type ParallelStateDB struct {
 	StateDB
+}
+
+func hasKvConflicts(slotDB *ParallelStateDB, addr common.Address, key common.Hash, val common.Hash) bool {
+	mainDB := slotDB.parallel.baseStateDB
+	valMain := slotDB.getStateFromMainNoUpdate(addr, key) // mainDB.GetStateNoUpdate(addr, key)
+
+	if !bytes.Equal(val.Bytes(), valMain.Bytes()) {
+		log.Debug("hasKvConflict is invalid", "addr", addr,
+			"key", key, "valSlot", val,
+			"valMain", valMain, "SlotIndex", slotDB.parallel.SlotIndex,
+			"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
+			"mainDB.TxIndex", mainDB.TxIndex())
+		return true // return false, Range will be terminated.
+	}
+	return false
 }
 
 func hasKvConflict(slotDB *ParallelStateDB, addr common.Address, key common.Hash, val common.Hash, isStage2 bool) bool {
@@ -1304,6 +1320,128 @@ func (s *ParallelStateDB) getStateFromMainNoUpdate(addr common.Address, key comm
 	}
 
 	return val
+}
+
+// ParallelReadsOk checks whether a parallel-executed transactions read state is equal to main db or not.
+func (slotDB *ParallelStateDB) ParallelReadsOk() bool {
+
+	mainDB := slotDB.parallel.baseStateDB
+
+	slotDB.parallel.conflictCheckStateObjectCache = new(sync.Map)
+	slotDB.parallel.conflictCheckKVReadCache = new(sync.Map)
+
+	// for nonce
+	for addr, nonceSlot := range slotDB.parallel.nonceReadsInSlot {
+		var nonceMain uint64 = 0
+		mainObj := slotDB.getStateObjectFromMainDBNoUpdate(addr)
+		if mainObj != nil {
+			nonceMain = mainObj.Nonce()
+		}
+		if nonceSlot != nonceMain {
+			log.Debug("IsSlotDBReadsValid nonce read is invalid", "addr", addr,
+				"nonceSlot", nonceSlot, "nonceMain", nonceMain, "SlotIndex", slotDB.parallel.SlotIndex,
+				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
+				"mainIndex", mainDB.txIndex)
+
+			return false
+		}
+	}
+	// balance
+	for addr, balanceSlot := range slotDB.parallel.balanceReadsInSlot {
+		balanceMain := common.Big0
+		mainObj := slotDB.getStateObjectFromMainDBNoUpdate(addr)
+		if mainObj != nil {
+			balanceMain = mainObj.Balance()
+		}
+
+		if balanceSlot.Cmp(balanceMain) != 0 {
+			log.Debug("IsSlotDBReadsValid balance read is invalid", "addr", addr,
+				"balanceSlot", balanceSlot, "balanceMain", balanceMain, "SlotIndex", slotDB.parallel.SlotIndex,
+				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
+				"mainIndex", mainDB.txIndex)
+			return false
+		}
+	}
+	// check KV
+	var units []ParallelKvCheckUnit // todo: pre-allocate to make it faster
+	for addr, read := range slotDB.parallel.kvReadsInSlot {
+		read.Range(func(keySlot, valSlot interface{}) bool {
+			units = append(units, ParallelKvCheckUnit{addr, keySlot.(common.Hash), valSlot.(common.Hash)})
+			return true
+		})
+	}
+	for _, unit := range units {
+		if hasKvConflicts(slotDB, unit.addr, unit.key, unit.val) {
+			return false
+		}
+	}
+
+	// check code
+	for addr, codeSlot := range slotDB.parallel.codeReadsInSlot {
+		var codeMain []byte = nil
+		object := slotDB.getStateObjectFromMainDBNoUpdate(addr)
+		if object != nil {
+			codeMain = object.Code()
+		}
+		if !bytes.Equal(codeSlot, codeMain) {
+			log.Debug("IsSlotDBReadsValid code read is invalid", "addr", addr,
+				"len codeSlot", len(codeSlot), "len codeMain", len(codeMain), "SlotIndex", slotDB.parallel.SlotIndex,
+				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
+				"mainIndex", mainDB.txIndex)
+			return false
+		}
+	}
+	// check codeHash
+	for addr, codeHashSlot := range slotDB.parallel.codeHashReadsInSlot {
+		codeHashMain := common.Hash{}
+		object := slotDB.getStateObjectFromMainDBNoUpdate(addr)
+		if object != nil {
+			codeHashMain = common.BytesToHash(object.CodeHash())
+		}
+		if !bytes.Equal(codeHashSlot.Bytes(), codeHashMain.Bytes()) {
+			log.Debug("IsSlotDBReadsValid codehash read is invalid", "addr", addr,
+				"codeHashSlot", codeHashSlot, "codeHashMain", codeHashMain, "SlotIndex", slotDB.parallel.SlotIndex,
+				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex, "mainIndex", mainDB.txIndex)
+			return false
+		}
+	}
+	// addr state check
+	for addr, stateSlot := range slotDB.parallel.addrStateReadsInSlot {
+		stateMain := false // addr not exist
+		if slotDB.getStateObjectFromMainDBNoUpdate(addr) != nil {
+			stateMain = true // addr exist in main DB
+		}
+		if stateSlot != stateMain {
+			log.Debug("IsSlotDBReadsValid addrState read invalid(true: exist, false: not exist)",
+				"addr", addr, "stateSlot", stateSlot, "stateMain", stateMain,
+				"SlotIndex", slotDB.parallel.SlotIndex,
+				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex, "mainIndex", mainDB.txIndex)
+			return false
+		}
+	}
+	// snapshot destructs check
+	for addr, destructRead := range slotDB.parallel.addrSnapDestructsReadsInSlot {
+		mainObj := mainDB.getDeletedStateObjectNoUpdate(addr)
+		if mainObj == nil {
+			log.Debug("IsSlotDBReadsValid snapshot destructs read invalid, address should exist",
+				"addr", addr, "destruct", destructRead,
+				"SlotIndex", slotDB.parallel.SlotIndex,
+				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex)
+			return false
+		}
+		slotDB.snapParallelLock.RLock()               // fixme: this lock is not needed
+		_, destructMain := mainDB.snapDestructs[addr] // addr not exist
+		slotDB.snapParallelLock.RUnlock()
+		if destructRead != destructMain && addr.Hex() != "0x0000000000000000000000000000000000000001" {
+			log.Debug("IsSlotDBReadsValid snapshot destructs read invalid",
+				"addr", addr, "destructRead", destructRead, "destructMain", destructMain,
+				"SlotIndex", slotDB.parallel.SlotIndex,
+				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
+				"mainIndex", mainDB.txIndex)
+			return false
+		}
+	}
+	return true
 }
 
 // IsParallelReadsValid If stage2 is true, it is a likely conflict check,

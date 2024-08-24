@@ -3,10 +3,11 @@ package core
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/metrics"
 	"runtime"
 	"sync"
 	"sync/atomic"
+
+	"github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -50,6 +51,10 @@ type ParallelStateProcessor struct {
 	nextStage2TxIndex     int
 	delayGasFee           bool
 }
+
+var (
+	ErrTxConflict = errors.New("TxConflict")
+)
 
 func newParallelStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consensus.Engine, parallelNum int) *ParallelStateProcessor {
 	processor := &ParallelStateProcessor{
@@ -246,6 +251,24 @@ func (p *ParallelStateProcessor) mostHungrySlot() int {
 		}
 	}
 	return slotIndex
+}
+
+func (p *ParallelStateProcessor) conflict(txResult *ParallelTxResult) bool {
+	slotDB := txResult.slotDB
+	if txResult.err != nil {
+		log.Info("HasConflict due to err", "err", txResult.err)
+		return true
+	} else if slotDB.NeedsRedo() {
+		log.Info("HasConflict needsRedo")
+		// if there is any reason that indicates this transaction needs to redo, skip the conflict check
+		return true
+	} else {
+		// check whether the slot db reads during execution are correct.
+		if !slotDB.ParallelReadsOk() {
+			return true
+		}
+	}
+	return false
 }
 
 // hasConflict conducts conflict check
@@ -450,6 +473,130 @@ func (p *ParallelStateProcessor) toConfirmTxIndex(targetTxIndex int, isStage2 bo
 		}
 		return targetResult
 	}
+}
+
+func (p *ParallelStateProcessor) execute(txReq *ParallelTxRequest) *ParallelTxResult {
+	txResult := &ParallelTxResult{txReq: txReq}
+	txReq.executedNum.Add(1)
+	slotDB := state.NewSlotDB(txReq.baseStateDB, txReq.txIndex, 0, p.unconfirmedDBs, txReq.useDAG)
+	blockContext := NewEVMBlockContext(txReq.block.Header(), p.bc, nil, p.config, slotDB) // can share blockContext within a block for efficiency
+	txContext := NewEVMTxContext(txReq.msg)
+	vmenv := vm.NewEVM(blockContext, txContext, slotDB, p.config, txReq.vmConfig)
+
+	rules := p.config.Rules(txReq.block.Number(), blockContext.Random != nil, blockContext.Time)
+	slotDB.Prepare(rules, txReq.msg.From, vmenv.Context.Coinbase, txReq.msg.To, vm.ActivePrecompiles(rules), txReq.msg.AccessList)
+
+	// gasLimit not accurate, but it is ok for block import.
+	// each slot would use its own gas pool, and will do gas limit check later
+	gpSlot := new(GasPool).AddGas(txReq.gasLimit) // block.GasLimit()
+
+	on := txReq.tx.Nonce()
+	if txReq.msg.IsDepositTx && p.config.IsOptimismRegolith(vmenv.Context.Time) {
+		on = slotDB.GetNonce(txReq.msg.From)
+	}
+
+	slotDB.SetTxContext(txReq.tx.Hash(), txReq.txIndex)
+
+	evm, result, err := applyTransactionStageExecution(txReq.msg, gpSlot, slotDB, vmenv, p.delayGasFee)
+
+	txResult.err, txResult.slotDB, txResult.evm, txResult.gpSlot, txResult.result, txResult.originalNonce = err, slotDB, evm, gpSlot, result, &on
+	return txResult
+}
+
+func (p *ParallelStateProcessor) confirmTx(result *ParallelTxResult, statedb *state.StateDB, gp *GasPool) error {
+	txReq := result.txReq
+	if p.conflict(result) {
+		log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", result.txReq.block.NumberU64(), result.txReq.txIndex))
+		return ErrTxConflict
+	}
+
+	// goroutine unsafe operation will be handled from here for safety
+	gasConsumed := txReq.gasLimit - result.gpSlot.Gas()
+	if gasConsumed != result.result.UsedGas {
+		log.Error("gasConsumed != result.UsedGas mismatch",
+			"gasConsumed", gasConsumed, "result.UsedGas", result.result.UsedGas)
+		// TODO should we return error here ?
+	}
+
+	// ok, time to do finalize, stage2 should not be parallel
+	result.receipt, result.err = applyTransactionStageFinalization(result.evm, result.result,
+		*txReq.msg, p.config, result.slotDB, txReq.block,
+		txReq.tx, txReq.usedGas, result.originalNonce)
+
+	// ok, the tx result is valid and can be merged
+	if result.err != nil {
+		return result.err
+	}
+
+	if err := gp.SubGas(result.receipt.GasUsed); err != nil {
+		log.Error("gas limit reached", "block", result.txReq.block.Number(),
+			"txIndex", result.txReq.txIndex, "GasUsed", result.receipt.GasUsed, "gp.Gas", gp.Gas())
+	}
+
+	resultTxIndex := result.txReq.txIndex
+
+	var root []byte
+	header := result.txReq.block.Header()
+
+	isByzantium := p.config.IsByzantium(header.Number)
+	isEIP158 := p.config.IsEIP158(header.Number)
+	result.slotDB.FinaliseForParallel(isByzantium || isEIP158, statedb)
+
+	// merge slotDB into mainDB
+	statedb.MergeSlotDB(result.slotDB, result.receipt, resultTxIndex, result.result.delayFees)
+
+	delayGasFee := result.result.delayFees
+	// add delayed gas fee
+	if delayGasFee != nil {
+		if delayGasFee.TipFee != nil {
+			statedb.AddBalance(delayGasFee.Coinbase, delayGasFee.TipFee)
+		}
+		if delayGasFee.BaseFee != nil {
+			statedb.AddBalance(params.OptimismBaseFeeRecipient, delayGasFee.BaseFee)
+		}
+		if delayGasFee.L1Fee != nil {
+			statedb.AddBalance(params.OptimismL1FeeRecipient, delayGasFee.L1Fee)
+		}
+	}
+
+	// Do IntermediateRoot after mergeSlotDB.
+	if !isByzantium {
+		root = statedb.IntermediateRoot(isEIP158).Bytes()
+	}
+	result.receipt.PostState = root
+
+	if resultTxIndex != int(p.mergedTxIndex.Load())+1 {
+		log.Error("ProcessParallel tx result out of order", "resultTxIndex", resultTxIndex,
+			"p.mergedTxIndex", p.mergedTxIndex.Load())
+	}
+	p.mergedTxIndex.Store(int32(resultTxIndex))
+
+	// trigger all slot to run left conflicted txs
+	for _, slot := range p.slotState {
+		var wakeupChan chan struct{}
+		if slot.activatedType == parallelPrimarySlot {
+			wakeupChan = slot.primaryWakeUpChan
+		} else {
+			wakeupChan = slot.shadowWakeUpChan
+		}
+		select {
+		case wakeupChan <- struct{}{}:
+		default:
+		}
+	}
+	// schedule prefetch once only when unconfirmedResult is valid
+	if result.err == nil {
+		if _, ok := p.txReqExecuteRecord[resultTxIndex]; !ok {
+			p.txReqExecuteRecord[resultTxIndex] = 0
+			p.txReqExecuteCount++
+			statedb.AddrPrefetch(result.slotDB)
+			if !p.inConfirmStage2 && p.txReqExecuteCount == p.targetStage2Count {
+				p.inConfirmStage2 = true
+			}
+		}
+		p.txReqExecuteRecord[resultTxIndex]++
+	}
+	return nil
 }
 
 // to confirm one txResult, return true if the result is valid
@@ -743,10 +890,9 @@ func (p *ParallelStateProcessor) doCleanUp() {
 // Process implements BEP-130 Parallel Transaction Execution
 func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (types.Receipts, []*types.Log, uint64, error) {
 	var (
-		receipts types.Receipts
-		usedGas  = new(uint64)
-		header   = block.Header()
-		gp       = new(GasPool).AddGas(block.GasLimit())
+		usedGas = new(uint64)
+		header  = block.Header()
+		gp      = new(GasPool).AddGas(block.GasLimit())
 	)
 
 	// Mutate the block and state according to any hard-fork specs
@@ -797,11 +943,8 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		}
 	}
 
-	txNum := len(allTxs)
-	latestExcludedTx := -1
-	// Iterate over and process the individual transactions
-	commonTxs := make([]*types.Transaction, 0, txNum)
 	// var txReqs []*ParallelTxRequest
+	var allTxReq, receipts, commonTxs = make([]*ParallelTxRequest, len(allTxs)), make([]*types.Receipt, len(allTxs)), allTxs
 	for i, tx := range allTxs {
 		// can be moved it into slot for efficiency, but signer is not concurrent safe
 		// Parallel Execution 1.0&2.0 is for full sync mode, Nonce PreCheck is not necessary
@@ -811,16 +954,6 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-
-		// find the latestDepTx from TxDAG or latestExcludedTx
-		latestDepTx := -1
-		if dep := types.TxDependency(txDAG, i); len(dep) > 0 {
-			latestDepTx = int(dep[len(dep)-1])
-		}
-		if latestDepTx < latestExcludedTx {
-			latestDepTx = latestExcludedTx
-		}
-
 		// parallel start, wrap an exec message, which will be dispatched to a slot
 		txReq := &ParallelTxRequest{
 			txIndex:         i,
@@ -837,72 +970,30 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			useDAG:          txDAG != nil,
 		}
 		txReq.executedNum.Store(0)
-		txReq.conflictIndex.Store(-2)
-		if latestDepTx >= 0 {
-			txReq.conflictIndex.Store(int32(latestDepTx))
-		}
-		p.allTxReqs = append(p.allTxReqs, txReq)
-		if txDAG != nil && txDAG.TxDep(i).CheckFlag(types.ExcludedTxFlag) {
-			latestExcludedTx = i
-		}
-	}
-	// set up stage2 enter criteria
-	p.targetStage2Count = len(p.allTxReqs)
-	if p.targetStage2Count > 50 {
-		// usually, the last Tx could be the bottleneck it could be very slow,
-		// so it is better for us to enter stage 2 a bit earlier
-		p.targetStage2Count = p.targetStage2Count - stage2AheadNum
+		allTxReq[i] = txReq
 	}
 
+	// reorg with TxDAG
+	parallelRunner := NewTxLevels(allTxReq, txDAG)
 	p.delayGasFee = false
-	p.doStaticDispatch(p.allTxReqs)
 	if txDAG != nil && txDAG.DelayGasFeeDistribution() {
 		p.delayGasFee = true
 	}
 
-	// after static dispatch, we notify the slot to work.
-	for _, slot := range p.slotState {
-		slot.primaryWakeUpChan <- struct{}{}
-	}
-
-	// wait until all Txs have processed.
-	for {
-		if len(commonTxs) == txNum {
-			// put it ahead of chan receive to avoid waiting for empty block
-			break
+	parallelRunner.Run(p.execute, func(txResult *ParallelTxResult) error {
+		err := p.confirmTx(txResult, statedb, gp)
+		if err != nil {
+			p.debugConflictRedoNum++
+			return err
 		}
-		unconfirmedResult := <-p.txResultChan
-		unconfirmedTxIndex := unconfirmedResult.txReq.txIndex
-		if unconfirmedTxIndex <= int(p.mergedTxIndex.Load()) {
-			log.Debug("drop merged txReq", "unconfirmedTxIndex", unconfirmedTxIndex, "p.mergedTxIndex", p.mergedTxIndex.Load())
-			continue
-		}
-		p.pendingConfirmResults[unconfirmedTxIndex] = append(p.pendingConfirmResults[unconfirmedTxIndex], unconfirmedResult)
-
-		for {
-			result := p.confirmTxResults(statedb, gp)
-			if result == nil {
-				break
-			}
-			// update tx result
-			if result.err != nil {
-				log.Error("ProcessParallel a failed tx", "resultSlotIndex", result.slotIndex,
-					"resultTxIndex", result.txReq.txIndex, "result.err", result.err)
-				p.doCleanUp()
-				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", result.txReq.txIndex, result.txReq.tx.Hash().Hex(), result.err)
-			}
-			commonTxs = append(commonTxs, result.txReq.tx)
-			receipts = append(receipts, result.receipt)
-		}
-	}
-
-	// clean up when the block is processed
-	p.doCleanUp()
+		receipts[txResult.txReq.txIndex] = txResult.receipt
+		return nil
+	})
 
 	// len(commonTxs) could be 0, such as: https://bscscan.com/block/14580486
 	if len(commonTxs) > 0 && p.debugConflictRedoNum > 0 {
 		log.Info("ProcessParallel tx all done", "block", header.Number, "usedGas", *usedGas,
-			"txNum", txNum,
+			"txNum", len(allTxs),
 			"len(commonTxs)", len(commonTxs),
 			"conflictNum", p.debugConflictRedoNum,
 			"redoRate(%)", 100*(p.debugConflictRedoNum)/len(commonTxs),
