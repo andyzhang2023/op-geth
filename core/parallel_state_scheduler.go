@@ -11,6 +11,7 @@ import (
 var runner chan func()
 
 func init() {
+	runner = make(chan func(), runtime.NumCPU())
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go func() {
 			for f := range runner {
@@ -101,7 +102,7 @@ func (cq *confirmQueue) rerun(i int, execute func(*ParallelTxRequest) *ParallelT
 
 // run runs the transactions in parallel
 // execute must return a non-nil result, otherwise it panics.
-func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) {
+func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) error {
 	toConfirm := &confirmQueue{
 		queue:     make([]confirmation, tls.txCount()),
 		confirmed: -1,
@@ -111,20 +112,22 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 	for _, txLevel := range tls {
 		wait := sync.WaitGroup{}
 		wait.Add(len(txLevel))
-		go func() {
-			for _, tx := range txLevel {
-				// execute the transactions in parallel
-				runner <- func() {
-					defer wait.Done()
-					res := execute(tx)
-					toConfirm.collect(res, res.err)
-				}
+		for _, tx := range txLevel {
+			// execute the transactions in parallel
+			runner <- func() {
+				defer wait.Done()
+				res := execute(tx)
+				toConfirm.collect(res, res.err)
 			}
-		}()
+		}
 		wait.Wait()
 		// all transactions of current level are executed, now try to confirm.
-		toConfirm.confirm(execute, confirm)
+		if err := toConfirm.confirm(execute, confirm); err != nil {
+			// something very wrong, stop the process
+			return err
+		}
 	}
+	return nil
 }
 
 func (tls TxLevels) txCount() int {
