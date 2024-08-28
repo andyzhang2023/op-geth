@@ -96,7 +96,7 @@ func (cq *confirmQueue) rerun(i int, execute func(*ParallelTxRequest) *ParallelT
 		// TODO add metrics, add error logs.
 		return rerun.err
 	}
-	cq.queue[i].result, cq.queue[i].executed, cq.queue[i].confirmed = rerun, nil, confirm(cq.queue[i].result)
+	cq.queue[i].result, cq.queue[i].executed, cq.queue[i].confirmed = rerun, nil, confirm(rerun)
 	if cq.queue[i].confirmed != nil {
 		// TODO add metrics, add error logs.
 		return cq.queue[i].confirmed

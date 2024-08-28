@@ -623,27 +623,12 @@ func (p *ParallelStateProcessor) runConfirmStage2Loop() {
 	}
 }
 
-func (p *ParallelStateProcessor) handleTxResults() *ParallelTxResult {
-	confirmedResult := p.toConfirmTxIndex(int(p.mergedTxIndex.Load())+1, false)
-	if confirmedResult == nil {
-		return nil
-	}
-	// schedule stage 2 when new Tx has been merged, schedule once and ASAP
-	// stage 2,if all tx have been executed at least once, and its result has been received.
-	// in Stage 2, we will run check when main DB is advanced, i.e., new Tx result has been merged.
-	if p.inConfirmStage2 && int(p.mergedTxIndex.Load()) >= p.nextStage2TxIndex {
-		p.nextStage2TxIndex = int(p.mergedTxIndex.Load()) + stage2CheckNumber
-		p.confirmStage2Chan <- int(p.mergedTxIndex.Load())
-	}
-	return confirmedResult
-}
-
 // wait until the next Tx is executed and its result is merged to the main stateDB
-func (p *ParallelStateProcessor) confirmTxResults(statedb *state.StateDB, gp *GasPool) *ParallelTxResult {
-	result := p.handleTxResults()
+func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, statedb *state.StateDB, gp *GasPool) *ParallelTxResult {
 	if result == nil {
 		return nil
 	}
+	p.toConfirmTxIndexResult(result, false)
 	// ok, the tx result is valid and can be merged
 	if result.err != nil {
 		return result
@@ -871,18 +856,22 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	err := NewTxLevels(p.allTxReqs, runtimeDag).Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		res := p.executeInSlot(0, ptr)
 		if res.err != nil {
+			log.Trace("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
 			atomic.AddInt32(&p.debugConflictRedoNum, 1)
 		}
 		return res
 	},
 		func(ptr *ParallelTxResult) error {
-			result := p.confirmTxResults(statedb, gp)
+			result := p.confirmTxResults(ptr, statedb, gp)
 			if result == nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
+				// it should never happen
+				log.Error("ProcessParallel confirm tx failed, result == nil", "block", header.Number)
 				return fmt.Errorf("nil result")
 			}
 			if result.err != nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
+				log.Trace("ProcessParallel confirm tx failed", "block", header.Number, "txIndex", result.txReq.txIndex, "err", result.err)
 				return fmt.Errorf("confirmed failed, txIndex:%d, err:%s", result.txReq.txIndex, result.err)
 			}
 			commonTxs = append(commonTxs, result.txReq.tx)
