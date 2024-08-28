@@ -55,7 +55,7 @@ func (cq *confirmQueue) collect(result *ParallelTxResult, err error) error {
 }
 
 // try to confirm txs as much as possible, they will be confirmed in a sequencial order.
-func (cq *confirmQueue) confirm(execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) error {
+func (cq *confirmQueue) confirm(execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) (error, int) {
 	// find all able-to-confirm transactions, and try to confirm them
 	for i := cq.confirmed + 1; i < len(cq.queue); i++ {
 		toConfirm := cq.queue[i]
@@ -69,7 +69,7 @@ func (cq *confirmQueue) confirm(execute func(*ParallelTxRequest) *ParallelTxResu
 			if err := cq.rerun(i, execute, confirm); err != nil {
 				// TODO add logs for err
 				// rerun failed, something very wrong.
-				return err
+				return err, toConfirm.result.txReq.txIndex
 			}
 
 		default:
@@ -79,13 +79,13 @@ func (cq *confirmQueue) confirm(execute func(*ParallelTxRequest) *ParallelTxResu
 				if err = cq.rerun(i, execute, confirm); err != nil {
 					// TODO add logs for err
 					// rerun failed, something very wrong.
-					return err
+					return err, toConfirm.result.txReq.txIndex
 				}
 			}
 		}
 		cq.confirmed = i
 	}
-	return nil
+	return nil, 0
 }
 
 // rerun executes the transaction of index 'i', and confirms it.
@@ -106,7 +106,7 @@ func (cq *confirmQueue) rerun(i int, execute func(*ParallelTxRequest) *ParallelT
 
 // run runs the transactions in parallel
 // execute must return a non-nil result, otherwise it panics.
-func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) error {
+func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) (error, int) {
 	toConfirm := &confirmQueue{
 		queue:     make([]confirmation, tls.txCount()),
 		confirmed: -1,
@@ -127,12 +127,12 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 		}
 		wait.Wait()
 		// all transactions of current level are executed, now try to confirm.
-		if err := toConfirm.confirm(execute, confirm); err != nil {
+		if err, txIndex := toConfirm.confirm(execute, confirm); err != nil {
 			// something very wrong, stop the process
-			return err
+			return err, txIndex
 		}
 	}
-	return nil
+	return nil, 0
 }
 
 func (tls TxLevels) txCount() int {

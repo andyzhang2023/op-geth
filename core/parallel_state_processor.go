@@ -628,12 +628,15 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	if result == nil {
 		return nil
 	}
-	p.toConfirmTxIndexResult(result, false)
-	// ok, the tx result is valid and can be merged
 	if result.err != nil {
 		return result
 	}
+	if !p.toConfirmTxIndexResult(result, false) {
+		result.err = ErrParallelUnexpectedConflict
+		return result
+	}
 
+	// ok, the tx result is valid and can be merged
 	if err := gp.SubGas(result.receipt.GasUsed); err != nil {
 		log.Error("gas limit reached", "block", result.txReq.block.Number(),
 			"txIndex", result.txReq.txIndex, "GasUsed", result.receipt.GasUsed, "gp.Gas", gp.Gas())
@@ -853,7 +856,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	}
 
 	// wait until all Txs have processed.
-	err := NewTxLevels(p.allTxReqs, runtimeDag).Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
+	err, txIndex := NewTxLevels(p.allTxReqs, runtimeDag).Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		res := p.executeInSlot(0, ptr)
 		if res.err != nil {
 			log.Trace("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
@@ -879,12 +882,14 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			return nil
 		})
 	if err != nil {
-		log.Error("ProcessParallel tx all done", "block", header.Number, "usedGas", *usedGas,
+		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
+			"txIndex", txIndex,
+			"err", err,
 			"txNum", txNum,
 			"len(commonTxs)", len(commonTxs),
 			"conflictNum", p.debugConflictRedoNum,
 			"txDAG", txDAG != nil)
-		return nil, nil, 0, errors.New("failed to execute transactions")
+		return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", txIndex, allTxs[txIndex].Hash().Hex(), err)
 	}
 
 	// clean up when the block is processed

@@ -184,7 +184,7 @@ func TestTxLevelRun(t *testing.T) {
 			nil, nil, nil, nil,
 		})
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 11, 6: 21, 7: 31, 8: 41})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -219,7 +219,7 @@ func TestTxLevelRun(t *testing.T) {
 			nil, nil, {0}, {1},
 		})
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 11, 6: 21})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -254,7 +254,7 @@ func TestTxLevelRun(t *testing.T) {
 			{0}, nil, {-1}, {-1},
 		})
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 11, 6: 21})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -301,7 +301,7 @@ func TestTxLevelRun(t *testing.T) {
 			res[i+2000] = i
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err := NewTxLevels(allReqs, nil).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels(allReqs, nil).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(res)
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -326,7 +326,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(2, 3, 10),
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err := NewTxLevels(allReqs, nil).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels(allReqs, nil).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 5, 2: 20, 3: 10})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -351,7 +351,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(2, 3, 10),
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err := NewTxLevels(allReqs, dag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels(allReqs, dag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 5, 2: 20, 3: 10})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
