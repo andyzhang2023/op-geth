@@ -3,10 +3,11 @@ package core
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/metrics"
 	"runtime"
 	"sync"
 	"sync/atomic"
+
+	"github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -39,7 +40,7 @@ type ParallelStateProcessor struct {
 	slotDBsToRelease      []*state.ParallelStateDB
 	stopSlotChan          chan struct{}
 	stopConfirmChan       chan struct{}
-	debugConflictRedoNum  int
+	debugConflictRedoNum  int32
 
 	confirmStage2Chan     chan int
 	stopConfirmStage2Chan chan struct{}
@@ -855,45 +856,46 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	}
 
 	p.delayGasFee = false
-	p.doStaticDispatch(p.allTxReqs)
 	if txDAG != nil && txDAG.DelayGasFeeDistribution() {
 		p.delayGasFee = true
 	}
 
-	// after static dispatch, we notify the slot to work.
-	for _, slot := range p.slotState {
-		slot.primaryWakeUpChan <- struct{}{}
+	// if txDAG == nil, we treat all txs as no-dependency ones
+	runtimeDag := txDAG
+	if runtimeDag == nil {
+		runtimeDag = &types.PlainTxDAG{}
+		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
 	}
 
 	// wait until all Txs have processed.
-	for {
-		if len(commonTxs) == txNum {
-			// put it ahead of chan receive to avoid waiting for empty block
-			break
+	err := NewTxLevels(p.allTxReqs, runtimeDag).Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
+		res := p.executeInSlot(0, ptr)
+		if res.err != nil {
+			atomic.AddInt32(&p.debugConflictRedoNum, 1)
 		}
-		unconfirmedResult := <-p.txResultChan
-		unconfirmedTxIndex := unconfirmedResult.txReq.txIndex
-		if unconfirmedTxIndex <= int(p.mergedTxIndex.Load()) {
-			log.Debug("drop merged txReq", "unconfirmedTxIndex", unconfirmedTxIndex, "p.mergedTxIndex", p.mergedTxIndex.Load())
-			continue
-		}
-		p.pendingConfirmResults[unconfirmedTxIndex] = append(p.pendingConfirmResults[unconfirmedTxIndex], unconfirmedResult)
-
-		for {
+		return res
+	},
+		func(ptr *ParallelTxResult) error {
 			result := p.confirmTxResults(statedb, gp)
 			if result == nil {
-				break
+				atomic.AddInt32(&p.debugConflictRedoNum, 1)
+				return fmt.Errorf("nil result")
 			}
-			// update tx result
 			if result.err != nil {
-				log.Error("ProcessParallel a failed tx", "resultSlotIndex", result.slotIndex,
-					"resultTxIndex", result.txReq.txIndex, "result.err", result.err)
-				p.doCleanUp()
-				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", result.txReq.txIndex, result.txReq.tx.Hash().Hex(), result.err)
+				atomic.AddInt32(&p.debugConflictRedoNum, 1)
+				return fmt.Errorf("confirmed failed, txIndex:%d, err:%s", result.txReq.txIndex, result.err)
 			}
 			commonTxs = append(commonTxs, result.txReq.tx)
 			receipts = append(receipts, result.receipt)
-		}
+			return nil
+		})
+	if err != nil {
+		log.Error("ProcessParallel tx all done", "block", header.Number, "usedGas", *usedGas,
+			"txNum", txNum,
+			"len(commonTxs)", len(commonTxs),
+			"conflictNum", p.debugConflictRedoNum,
+			"txDAG", txDAG != nil)
+		return nil, nil, 0, errors.New("failed to execute transactions")
 	}
 
 	// clean up when the block is processed
@@ -905,7 +907,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			"txNum", txNum,
 			"len(commonTxs)", len(commonTxs),
 			"conflictNum", p.debugConflictRedoNum,
-			"redoRate(%)", 100*(p.debugConflictRedoNum)/len(commonTxs),
+			"redoRate(%)", 100*(int(p.debugConflictRedoNum))/len(commonTxs),
 			"txDAG", txDAG != nil)
 	}
 	if metrics.EnabledExpensive {
