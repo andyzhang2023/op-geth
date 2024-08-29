@@ -3,14 +3,15 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/log"
 	"math/big"
 	"runtime"
 	"sort"
 	"sync"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const defaultNumOfSlots = 100
@@ -1390,7 +1391,8 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 		})
 	}
 	readLen := len(units)
-	if readLen < 8 || isStage2 {
+	//if readLen < 8 || isStage2 {
+	if true {
 		for _, unit := range units {
 			if hasKvConflict(slotDB, unit.addr, unit.key, unit.val, isStage2) {
 				return false

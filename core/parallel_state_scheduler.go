@@ -90,6 +90,8 @@ func (cq *confirmQueue) confirm(execute func(*ParallelTxRequest) *ParallelTxResu
 
 // rerun executes the transaction of index 'i', and confirms it.
 func (cq *confirmQueue) rerun(i int, execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) error {
+	//reset the result
+	cq.queue[i].result.err, cq.queue[i].executed, cq.queue[i].confirmed = nil, nil, nil
 	// failed, rerun and reconfirm, the rerun should alway success.
 	rerun := execute(cq.queue[i].result.txReq)
 	if rerun.err != nil {

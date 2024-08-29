@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/metrics"
 
@@ -165,9 +166,9 @@ func (p *ParallelStateProcessor) init() {
 
 // resetState clear slot state for each block.
 func (p *ParallelStateProcessor) resetState(txNum int, statedb *state.StateDB) {
-	if txNum == 0 {
-		return
-	}
+	//if txNum == 0 {
+	//	return
+	//}
 	p.mergedTxIndex.Store(-1)
 	p.debugConflictRedoNum = 0
 	p.inConfirmStage2 = false
@@ -257,11 +258,13 @@ func (p *ParallelStateProcessor) hasConflict(txResult *ParallelTxResult, isStage
 		return true
 	} else if slotDB.NeedsRedo() {
 		log.Info("HasConflict needsRedo")
+		txResult.err = errors.New("parallel needs redo")
 		// if there is any reason that indicates this transaction needs to redo, skip the conflict check
 		return true
 	} else {
 		// check whether the slot db reads during execution are correct.
 		if !slotDB.IsParallelReadsValid(isStage2) {
+			txResult.err = errors.New("parallel reads conflict")
 			return true
 		}
 	}
@@ -445,7 +448,6 @@ func (p *ParallelStateProcessor) toConfirmTxIndexResult(txResult *ParallelTxResu
 	txReq := txResult.txReq
 	if p.hasConflict(txResult, isStage2) {
 		log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
-		txResult.err = ErrParallelUnexpectedConflict
 		return false
 	}
 	if isStage2 { // not its turn
@@ -841,13 +843,21 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		runtimeDag = &types.PlainTxDAG{}
 		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
 	}
+	txLevels := NewTxLevels(allTxsReq, runtimeDag)
+	fmt.Print("ProcessParallel execute block ===========", ",block=", header.Number, ",levels=", len(txLevels), ",parallelNum=", cap(runner), "\n")
+
+	var executeFailed, confirmedFailed int32 = 0, 0
 
 	// wait until all Txs have processed.
-	err, txIndex := NewTxLevels(allTxsReq, runtimeDag).Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
+	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		res := p.executeInSlot(0, ptr)
 		if res.err != nil {
+			fmt.Print("ProcessParallel execute tx failed", ",block=", header.Number, ",txIndex=", ptr.txIndex, ",err=", res.err, "\n")
 			log.Trace("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
+			atomic.AddInt32(&executeFailed, 1)
 			atomic.AddInt32(&p.debugConflictRedoNum, 1)
+		} else {
+			fmt.Print("ProcessParallel execute tx succ", ",block=", header.Number, ",txIndex=", ptr.txIndex, "\n")
 		}
 		return res
 	},
@@ -857,18 +867,25 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
 				// it should never happen
 				log.Error("ProcessParallel confirm tx failed, result == nil", "block", header.Number)
+				fmt.Print("ProcessParallel confirm tx failed, result == nil", ",block=", header.Number, "\n")
+				atomic.AddInt32(&confirmedFailed, 1)
 				return fmt.Errorf("nil result")
 			}
 			if result.err != nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
-				log.Trace("ProcessParallel confirm tx failed", "block", header.Number, "txIndex", result.txReq.txIndex, "err", result.err)
+				atomic.AddInt32(&confirmedFailed, 1)
+				log.Trace("ProcessParallel confirm tx failed", ",block=", header.Number, ",txIndex=", result.txReq.txIndex, ",err=", result.err)
+				fmt.Print("ProcessParallel confirm tx failed", ",block=", header.Number, ",txIndex=", result.txReq.txIndex, ",err=", result.err, "\n")
 				return fmt.Errorf("confirmed failed, txIndex:%d, err:%s", result.txReq.txIndex, result.err)
 			}
+			fmt.Print("ProcessParallel confirm tx succ", ",block=", header.Number, ",txIndex=", result.txReq.txIndex, "\n")
 			commonTxs = append(commonTxs, result.txReq.tx)
 			receipts = append(receipts, result.receipt)
 			return nil
 		})
+	fmt.Print("ProcessParallel execute block done ===========", ",block=", header.Number, ",levels=", len(txLevels), ",executeFailed=", executeFailed, ",confirmFailed=", confirmedFailed, "\n")
 	if err != nil {
+		time.Sleep(1 * time.Second)
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
 			"err", err,
