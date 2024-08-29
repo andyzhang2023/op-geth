@@ -285,16 +285,8 @@ func (p *ParallelStateProcessor) switchSlot(slotIndex int) {
 
 // executeInSlot do tx execution with thread local slot.
 func (p *ParallelStateProcessor) executeInSlot(slotIndex int, txReq *ParallelTxRequest) *ParallelTxResult {
-	mIndex := p.mergedTxIndex.Load()
-	conflictIndex := txReq.conflictIndex.Load()
-	if mIndex < conflictIndex {
-		// The conflicted TX has not been finished executing, skip.
-		// the transaction failed at check(nonce or balance), actually it has not been executed yet.
-		atomic.CompareAndSwapInt32(&txReq.runnable, 0, 1)
-		return nil
-	}
 	execNum := txReq.executedNum.Add(1)
-	slotDB := state.NewSlotDB(txReq.baseStateDB, txReq.txIndex, int(mIndex), p.unconfirmedDBs, txReq.useDAG)
+	slotDB := state.NewSlotDB(txReq.baseStateDB, txReq.txIndex, int(0), p.unconfirmedDBs, txReq.useDAG)
 	blockContext := NewEVMBlockContext(txReq.block.Header(), p.bc, nil, p.config, slotDB) // can share blockContext within a block for efficiency
 	txContext := NewEVMTxContext(txReq.msg)
 	vmenv := vm.NewEVM(blockContext, txContext, slotDB, p.config, txReq.vmConfig)
@@ -340,12 +332,6 @@ func (p *ParallelStateProcessor) executeInSlot(slotIndex int, txReq *ParallelTxR
 		// Load conflict as it maybe updated by conflict checker or other execution slots.
 		// use old mIndex so that we can try the new one that is updated by other thread of merging
 		// during execution.
-		conflictIndex = txReq.conflictIndex.Load()
-		if conflictIndex < mIndex {
-			if txReq.conflictIndex.CompareAndSwap(conflictIndex, mIndex) {
-				log.Debug(fmt.Sprintf("Update conflictIndex in execution because of error: %s, new conflictIndex: %d", err.Error(), conflictIndex))
-			}
-		}
 		atomic.CompareAndSwapInt32(&txReq.runnable, 0, 1)
 		// the error could be caused by unconfirmed balance reference,
 		// the balance could insufficient to pay its gas limit, which cause it preCheck.buyGas() failed
@@ -459,6 +445,7 @@ func (p *ParallelStateProcessor) toConfirmTxIndexResult(txResult *ParallelTxResu
 	txReq := txResult.txReq
 	if p.hasConflict(txResult, isStage2) {
 		log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
+		txResult.err = ErrParallelUnexpectedConflict
 		return false
 	}
 	if isStage2 { // not its turn
@@ -632,7 +619,6 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 		return result
 	}
 	if !p.toConfirmTxIndexResult(result, false) {
-		result.err = ErrParallelUnexpectedConflict
 		return result
 	}
 
