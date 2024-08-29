@@ -772,7 +772,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		}
 	}
 
-	txNum := len(allTxs)
+	txNum, allTxsReq := len(allTxs), make([]*ParallelTxRequest, len(allTxs))
 	latestExcludedTx := -1
 	// Iterate over and process the individual transactions
 	commonTxs := make([]*types.Transaction, 0, txNum)
@@ -817,6 +817,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			txReq.conflictIndex.Store(int32(latestDepTx))
 		}
 		p.allTxReqs = append(p.allTxReqs, txReq)
+		allTxsReq[i] = txReq
 		if txDAG != nil && txDAG.TxDep(i).CheckFlag(types.ExcludedTxFlag) {
 			latestExcludedTx = i
 		}
@@ -842,7 +843,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	}
 
 	// wait until all Txs have processed.
-	err, txIndex := NewTxLevels(p.allTxReqs, runtimeDag).Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
+	err, txIndex := NewTxLevels(allTxsReq, runtimeDag).Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		res := p.executeInSlot(0, ptr)
 		if res.err != nil {
 			log.Trace("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
