@@ -31,19 +31,19 @@ type ParallelKvCheckMessage struct {
 }
 
 var parallelKvCheckReqCh chan ParallelKvCheckMessage
-var parallelKvCheckResCh chan bool
+var parallelKvCheckResCh chan error
 
 type ParallelStateDB struct {
 	StateDB
 }
 
-func hasKvConflict(slotDB *ParallelStateDB, addr common.Address, key common.Hash, val common.Hash, isStage2 bool) bool {
+func hasKvConflict(slotDB *ParallelStateDB, addr common.Address, key common.Hash, val common.Hash, isStage2 bool) error {
 	mainDB := slotDB.parallel.baseStateDB
 
 	if isStage2 { // update slotDB's unconfirmed DB list and try
 		if slotDB.parallel.useDAG {
 			// DAG never reads from unconfirmedDB, skip check.
-			return false
+			return nil
 		}
 		if valUnconfirm, ok := slotDB.getKVFromUnconfirmedDB(addr, key); ok {
 			if !bytes.Equal(val.Bytes(), valUnconfirm.Bytes()) {
@@ -51,7 +51,7 @@ func hasKvConflict(slotDB *ParallelStateDB, addr common.Address, key common.Hash
 					"valSlot", val, "valUnconfirm", valUnconfirm,
 					"SlotIndex", slotDB.parallel.SlotIndex,
 					"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex)
-				return true
+				return fmt.Errorf("KV read is invalid in unconfirmed, key:%s", key.Hex())
 			}
 		}
 	}
@@ -63,15 +63,15 @@ func hasKvConflict(slotDB *ParallelStateDB, addr common.Address, key common.Hash
 			"valMain", valMain, "SlotIndex", slotDB.parallel.SlotIndex,
 			"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 			"mainDB.TxIndex", mainDB.TxIndex())
-		return true // return false, Range will be terminated.
+		return fmt.Errorf("KV read is invalid, key:%s", key.Hex())
 	}
-	return false
+	return nil
 }
 
 // StartKvCheckLoop start several routines to do conflict check
 func StartKvCheckLoop() {
 	parallelKvCheckReqCh = make(chan ParallelKvCheckMessage, 200)
-	parallelKvCheckResCh = make(chan bool, 10)
+	parallelKvCheckResCh = make(chan error, 10)
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go func() {
 			for {
@@ -1309,7 +1309,7 @@ func (s *ParallelStateDB) getStateFromMainNoUpdate(addr common.Address, key comm
 
 // IsParallelReadsValid If stage2 is true, it is a likely conflict check,
 // to detect these potential conflict results in advance and schedule redo ASAP.
-func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
+func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 	parallelKvOnce.Do(func() {
 		StartKvCheckLoop()
 	})
@@ -1321,21 +1321,21 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 
 	if isStage2 && slotDB.txIndex < mainDB.TxIndex() {
 		// already merged, no need to check
-		return true
+		return nil
 	}
 	// for nonce
 	for addr, nonceSlot := range slotDB.parallel.nonceReadsInSlot {
 		if isStage2 { // update slotDB's unconfirmed DB list and try
 			if slotDB.parallel.useDAG {
 				// DAG never reads from unconfirmedDB, skip check.
-				return true
+				return nil
 			}
 			if nonceUnconfirm, ok := slotDB.getNonceFromUnconfirmedDB(addr); ok {
 				if nonceSlot != nonceUnconfirm {
 					log.Debug("IsSlotDBReadsValid nonce read is invalid in unconfirmed", "addr", addr,
 						"nonceSlot", nonceSlot, "nonceUnconfirm", nonceUnconfirm, "SlotIndex", slotDB.parallel.SlotIndex,
 						"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex)
-					return false
+					return fmt.Errorf("nonce read is invalid in unconfirmed", "addr", addr, "nonceSlot", nonceSlot, "nonceUnconfirm", nonceUnconfirm)
 				}
 			}
 		}
@@ -1350,7 +1350,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 				"mainIndex", mainDB.txIndex)
 
-			return false
+			return fmt.Errorf("nonce read is invalid", "addr", addr, "nonceSlot", nonceSlot, "nonceMain", nonceMain)
 		}
 	}
 	// balance
@@ -1358,13 +1358,13 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 		if isStage2 { // update slotDB's unconfirmed DB list and try
 			if slotDB.parallel.useDAG {
 				// DAG never reads from unconfirmedDB, skip check.
-				return true
+				return nil
 			}
 			if balanceUnconfirm := slotDB.getBalanceFromUnconfirmedDB(addr); balanceUnconfirm != nil {
 				if balanceSlot.Cmp(balanceUnconfirm) == 0 {
 					continue
 				}
-				return false
+				return fmt.Errorf("balance read is invalid in unconfirmed", "addr", addr, "balanceSlot", balanceSlot.Uint64(), "balanceUnconfirm", balanceUnconfirm.Uint64())
 			}
 		}
 
@@ -1379,7 +1379,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 				"balanceSlot", balanceSlot, "balanceMain", balanceMain, "SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 				"mainIndex", mainDB.txIndex)
-			return false
+			return fmt.Errorf("balance read is invalid", "addr", addr, "balanceSlot", balanceSlot, "balanceMain", balanceMain)
 		}
 	}
 	// check KV
@@ -1394,8 +1394,8 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 	//if readLen < 8 || isStage2 {
 	if true {
 		for _, unit := range units {
-			if hasKvConflict(slotDB, unit.addr, unit.key, unit.val, isStage2) {
-				return false
+			if err := hasKvConflict(slotDB, unit.addr, unit.key, unit.val, isStage2); err != nil {
+				return err
 			}
 		}
 	} else {
@@ -1407,7 +1407,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 				select {
 				case conflict := <-parallelKvCheckResCh:
 					msgHandledNum++
-					if conflict {
+					if conflict != nil {
 						// make sure all request are handled or discarded
 						for {
 							if msgHandledNum == msgSendNum {
@@ -1420,7 +1420,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 								msgHandledNum++
 							}
 						}
-						return false
+						return conflict
 					}
 				case parallelKvCheckReqCh <- ParallelKvCheckMessage{slotDB, isStage2, unit}:
 					msgSendNum++
@@ -1437,7 +1437,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 			}
 			conflict := <-parallelKvCheckResCh
 			msgHandledNum++
-			if conflict {
+			if conflict != nil {
 				// make sure all request are handled or discarded
 				for {
 					if msgHandledNum == msgSendNum {
@@ -1450,13 +1450,13 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 						msgHandledNum++
 					}
 				}
-				return false
+				return conflict
 			}
 		}
 	}
 
 	if isStage2 { // stage2 skip check code, or state, since they are likely unchanged.
-		return true
+		return nil
 	}
 
 	// check code
@@ -1471,7 +1471,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 				"len codeSlot", len(codeSlot), "len codeMain", len(codeMain), "SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 				"mainIndex", mainDB.txIndex)
-			return false
+			return fmt.Errorf("code read is invalid", "addr", addr, "len codeSlot", len(codeSlot), "len codeMain", len(codeMain))
 		}
 	}
 	// check codeHash
@@ -1485,7 +1485,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 			log.Debug("IsSlotDBReadsValid codehash read is invalid", "addr", addr,
 				"codeHashSlot", codeHashSlot, "codeHashMain", codeHashMain, "SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex, "mainIndex", mainDB.txIndex)
-			return false
+			return fmt.Errorf("codehash read is invalid", "addr", addr, "codeHashSlot", codeHashSlot, "codeHashMain", codeHashMain)
 		}
 	}
 	// addr state check
@@ -1499,7 +1499,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 				"addr", addr, "stateSlot", stateSlot, "stateMain", stateMain,
 				"SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex, "mainIndex", mainDB.txIndex)
-			return false
+			return fmt.Errorf("addrState read invalid", "addr", addr, "stateSlot", stateSlot, "stateMain", stateMain)
 		}
 	}
 	// snapshot destructs check
@@ -1510,7 +1510,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 				"addr", addr, "destruct", destructRead,
 				"SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex)
-			return false
+			return fmt.Errorf("snapshot destructs read invalid, address should exist")
 		}
 		slotDB.snapParallelLock.RLock()               // fixme: this lock is not needed
 		_, destructMain := mainDB.snapDestructs[addr] // addr not exist
@@ -1521,10 +1521,10 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) bool {
 				"SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 				"mainIndex", mainDB.txIndex)
-			return false
+			return fmt.Errorf("snapshot destructs read invalid")
 		}
 	}
-	return true
+	return nil
 }
 
 // NeedsRedo returns true if there is any clear reason that we need to redo this transaction
