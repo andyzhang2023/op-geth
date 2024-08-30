@@ -47,6 +47,13 @@ func newJournal() *journal {
 	}
 }
 
+func (j *journal) peak() journalEntry {
+	if len(j.entries) == 0 {
+		return nil
+	}
+	return j.entries[len(j.entries)-1]
+}
+
 // append inserts a new modification entry to the end of the change journal.
 func (j *journal) append(entry journalEntry) {
 	j.entries = append(j.entries, entry)
