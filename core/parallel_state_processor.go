@@ -263,8 +263,8 @@ func (p *ParallelStateProcessor) hasConflict(txResult *ParallelTxResult, isStage
 		return true
 	} else {
 		// check whether the slot db reads during execution are correct.
-		if !slotDB.IsParallelReadsValid(isStage2) {
-			txResult.err = errors.New("parallel reads conflict")
+		if err := slotDB.IsParallelReadsValid(isStage2); err != nil {
+			txResult.err = err
 			return true
 		}
 	}
