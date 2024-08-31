@@ -11,11 +11,23 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+// UncommittedDB is a wrapper of StateDB, which records all the writes of the state.
+// It is designed for parallel running of the EVM.
+// An UncommittedDB instance only serves one transaction, and will be destruct after the transaction is executed.
 type UncommittedDB struct {
+	// transaction context
+	txHash  common.Hash
+	txIndex uint64
+	logs    []*types.Log
+
+	// accessList
+	accessList *accessList
+
 	stateObjects map[common.Address]*stateObject
 	// reads records the read state of the maindb before any modification
 	reads  reads
 	cache  writes
+	refund uint64
 	maindb *StateDB
 }
 
@@ -172,6 +184,7 @@ func (pst *UncommittedDB) AddSlotToAccessList(addr common.Address, slot common.H
 
 // ===============================================
 // Snapshot Methods
+// (is it necessary to do snapshot and revert ?)
 func (pst *UncommittedDB) RevertToSnapshot(id int) {
 	pst.maindb.RevertToSnapshot(id)
 }
@@ -189,6 +202,17 @@ func (pst *UncommittedDB) AddLog(log *types.Log) {
 // Preimage Methods (EIP-1352: https://eips.ethereum.org/EIPS/eip-1352)
 func (pst *UncommittedDB) AddPreimage(hash common.Hash, preimage []byte) {
 	pst.maindb.AddPreimage(hash, preimage)
+}
+
+// check conflict
+func (pst *UncommittedDB) HasConflict() error {
+	return nil
+}
+
+func (pst *UncommittedDB) Merge() error {
+	// 1. merge the writes into the maindb
+	// 2. clear the writes
+	return nil
 }
 
 // getDeletedObj returns the state object for the given address or nil if not found.
