@@ -579,16 +579,3 @@ func (s *stateObject) Nonce() uint64 {
 func (s *stateObject) Root() common.Hash {
 	return s.data.Root
 }
-
-// LightCopy only copies the state object without the trie and storage
-func (s *stateObject) LightCopy() *stateObject {
-	return &stateObject{
-		address: s.address,
-		data: types.StateAccount{
-			Balance:  new(big.Int).Set(s.data.Balance),
-			Nonce:    s.data.Nonce,
-			CodeHash: bytes.Clone(s.data.CodeHash),
-		},
-		selfDestructed: s.selfDestructed,
-	}
-}
