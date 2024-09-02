@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/ethereum/go-ethereum/metrics"
 
@@ -879,7 +878,6 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		})
 	log.Debug("ProcessParallel execute block done ", ",block=", header.Number, ",levels=", len(txLevels), ",executeFailed=", executeFailed, ",confirmFailed=", confirmedFailed, "\n")
 	if err != nil {
-		time.Sleep(1 * time.Second)
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
 			"err", err,
