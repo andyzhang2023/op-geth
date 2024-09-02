@@ -160,30 +160,31 @@ func (pst *UncommittedDB) SetNonce(addr common.Address, nonce uint64) {
 }
 
 func (pst *UncommittedDB) GetCodeHash(addr common.Address) common.Hash {
-	if obj := pst.getCode(addr); obj != nil {
+	if obj := pst.getObjectWithCode(addr); obj != nil {
 		return common.BytesToHash(obj.codeHash)
 	}
 	return types.EmptyCodeHash
 }
 
 func (pst *UncommittedDB) GetCode(addr common.Address) []byte {
-	if obj := pst.getCode(addr); obj != nil {
+	if obj := pst.getObjectWithCode(addr); obj != nil {
 		return obj.code
 	}
 	return nil
 }
 
 func (pst *UncommittedDB) GetCodeSize(addr common.Address) int {
-	if obj := pst.getCode(addr); obj != nil {
+	if obj := pst.getObjectWithCode(addr); obj != nil {
 		return obj.codeSize
 	}
 	return 0
 }
 
 func (pst *UncommittedDB) SetCode(addr common.Address, code []byte) {
-	pst.getOrNewObject(addr)
+	if obj := pst.getObjectWithCode(addr); obj == nil {
+		pst.cache.create(addr)
+	}
 	pst.cache.setCode(addr, code)
-	pst.maindb.SetCode(addr, code)
 }
 
 func (pst *UncommittedDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
@@ -204,7 +205,14 @@ func (pst *UncommittedDB) GetState(addr common.Address, hash common.Hash) common
 }
 
 func (pst *UncommittedDB) SetState(addr common.Address, key, value common.Hash) {
-	pst.getOrNewObject(addr)
+	obj := pst.getOrNewObject(addr)
+	value, ok := obj.state[key]
+	// it might be not loaded.
+	if !ok {
+		// load the state from the maindb, to save into the previous state reads
+		value = pst.maindb.GetState(addr, key)
+	}
+	pst.reads.recordKVOnce(addr, key, value)
 	pst.cache.setState(addr, key, value)
 }
 
@@ -247,12 +255,12 @@ func (pst *UncommittedDB) Empty(addr common.Address) bool {
 //  2. refunds
 
 func (pst *UncommittedDB) AddRefund(gas uint64) {
-	pst.readRefund()
+	pst.recordRefundOnce()
 	pst.refund += gas
 }
 
 func (pst *UncommittedDB) SubRefund(gas uint64) {
-	pst.readRefund()
+	pst.recordRefundOnce()
 	if pst.refund < gas {
 		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, pst.refund))
 	}
@@ -260,16 +268,16 @@ func (pst *UncommittedDB) SubRefund(gas uint64) {
 }
 
 func (pst *UncommittedDB) GetRefund() uint64 {
-	return pst.readRefund()
+	pst.recordRefundOnce()
+	return pst.refund
 }
 
-func (pst *UncommittedDB) readRefund() uint64 {
+func (pst *UncommittedDB) recordRefundOnce() {
 	if pst.prevRefund == nil {
 		refund := pst.maindb.GetRefund()
 		pst.prevRefund = &refund
 		pst.refund = refund
 	}
-	return pst.refund
 }
 
 // ===============================================
@@ -321,12 +329,15 @@ func (pst *UncommittedDB) AddLog(log *types.Log) {
 // ===============================================
 // Preimage Methods (EIP-1352: https://eips.ethereum.org/EIPS/eip-1352)
 func (pst *UncommittedDB) AddPreimage(hash common.Hash, preimage []byte) {
-	pst.maindb.AddPreimage(hash, preimage)
 	if _, ok := pst.preimages[hash]; !ok {
 		pi := make([]byte, len(preimage))
 		copy(pi, preimage)
 		pst.preimages[hash] = pi
 	}
+}
+
+func (pst *UncommittedDB) Preimages() map[common.Hash][]byte {
+	return pst.preimages
 }
 
 // check conflict
@@ -416,13 +427,13 @@ func (pst *UncommittedDB) getOrNewObject(addr common.Address) *state {
 // getCode returns the code for the given address or nil if not found.
 // 1. it first gets from the cache.
 // 2. if not found, then get from the maindb, and then record it in the cache.
-func (pst *UncommittedDB) getCode(addr common.Address) *state {
+func (pst *UncommittedDB) getObjectWithCode(addr common.Address) *state {
 	var code []byte
 	var codeHash = types.EmptyCodeHash
 	var state *state = nil
 	defer func() {
 		// update the reads record
-		pst.reads.recordCodeOnce(addr, codeHash, code, state)
+		pst.reads.recordCodeOnce(addr, codeHash, code)
 	}()
 
 	// the account's code found in the cache, return it, and no need to record the reads again
@@ -431,36 +442,22 @@ func (pst *UncommittedDB) getCode(addr common.Address) *state {
 		return obj
 	}
 	// now we known the code is not updated into cache, we need to update it after getting it from maindb
-	defer func() {
-		pst.cache[addr].code = code
-		pst.cache[addr].codeHash = codeHash[:]
-		pst.cache[addr].codeSize = len(code)
-	}()
 	mainobj := pst.maindb.getStateObject(addr)
 	// the account doesn't exist in the maindb, just return nil
 	if mainobj == nil {
 		return nil
 	}
+	defer func() {
+		// the mainobj != nil, so there must be a cache object for the addr, stored by the method pst.getObject()
+		pst.cache[addr].code = code
+		pst.cache[addr].codeHash = codeHash[:]
+		pst.cache[addr].codeSize = len(code)
+	}()
 	code = mainobj.Code()
 	// need to copy the balance, nonce and other common fields, if this is the first time to touch this object.
 	state = copyObj(mainobj)
 	codeHash = crypto.Keccak256Hash(code)
 	return state
-}
-
-func currState(obj *stateObject, addr common.Address) *state {
-	if obj == nil {
-		return &state{addr: addr, created: true, state: make(map[common.Hash]common.Hash)}
-	}
-	return &state{
-		addr:         addr,
-		balance:      big.NewInt(0).Set(obj.Balance()),
-		nonce:        obj.Nonce(),
-		selfDestruct: obj.selfDestructed,
-		code:         bytes.Clone(obj.code),
-		state:        make(map[common.Hash]common.Hash),
-		created:      false,
-	}
 }
 
 type state struct {
@@ -561,22 +558,22 @@ func (sts reads) recordOnce(addr common.Address, st *state) *state {
 	return st
 }
 
-func (sts reads) recordKVOnce(addr common.Address, key, val common.Hash, st *state) {
-	obj := sts.recordOnce(addr, st)
+func (sts reads) recordKVOnce(addr common.Address, key, val common.Hash) {
+	obj := sts[addr]
 	if _, ok := obj.state[key]; !ok {
 		obj.state[key] = val
 	}
 }
 
-func (sts reads) recordCodeOnce(addr common.Address, codeHash common.Hash, code []byte, st *state) {
-	sts.recordOnce(addr, st)
+func (sts reads) recordCodeOnce(addr common.Address, codeHash common.Hash, code []byte) {
+	st := sts[addr]
 	// we can't check whether the code is loaded or not, by checking codeHash == nil or code == nil (maybe the code is empty)
 	// so we need another fields to record the code previous state.
 	// and that is the `codeSize`, when codeSize == -1, it means the code is unloaded.
 	if !st.codeIsLoaded() {
-		sts[addr].codeHash = codeHash[:]
-		sts[addr].code = code
-		sts[addr].codeSize = len(code)
+		st.codeHash = codeHash[:]
+		st.code = code
+		st.codeSize = len(code)
 	}
 }
 
@@ -611,12 +608,11 @@ func (wst writes) setState(addr common.Address, key, val common.Hash) {
 }
 
 func (wst writes) setCode(addr common.Address, code []byte) {
+	codeHash := crypto.Keccak256Hash(code)
 	wst[addr].code = code
+	wst[addr].codeHash = codeHash[:]
+	wst[addr].codeSize = len(code)
 	wst[addr].modified |= ModifyCode
-}
-
-func (wst writes) obj(addr common.Address) *state {
-	return wst[addr]
 }
 
 func (wst writes) create(addr common.Address) *state {
