@@ -446,7 +446,7 @@ func (p *ParallelStateProcessor) toConfirmTxIndex(targetTxIndex int, isStage2 bo
 func (p *ParallelStateProcessor) toConfirmTxIndexResult(txResult *ParallelTxResult, isStage2 bool) bool {
 	txReq := txResult.txReq
 	if p.hasConflict(txResult, isStage2) {
-		log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
+		log.Debug(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
 		return false
 	}
 	if isStage2 { // not its turn
@@ -843,7 +843,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
 	}
 	txLevels := NewTxLevels(allTxsReq, runtimeDag)
-	log.Debug("ProcessParallel execute block ", ",block=", header.Number, ",levels=", len(txLevels), ",parallelNum=", cap(runner), "\n")
+	log.Info("ProcessParallel execute block ", ",block=", header.Number, ",levels=", len(txLevels), ",parallelNum=", cap(runner), "\n")
 
 	var executeFailed, confirmedFailed int32 = 0, 0
 
@@ -876,7 +876,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			receipts = append(receipts, result.receipt)
 			return nil
 		})
-	log.Debug("ProcessParallel execute block done ", ",block=", header.Number, ",levels=", len(txLevels), ",executeFailed=", executeFailed, ",confirmFailed=", confirmedFailed, "\n")
+	log.Info("ProcessParallel execute block done ", ",block=", header.Number, ",levels=", len(txLevels), ",executeFailed=", executeFailed, ",confirmFailed=", confirmedFailed, "\n")
 	if err != nil {
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
