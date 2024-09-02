@@ -92,7 +92,7 @@ func NewSlotDB(db *StateDB, txIndex int, baseTxIndex int, unconfirmedDBs *sync.M
 	slotDB.originalRoot = db.originalRoot
 	slotDB.parallel.baseStateDB = db
 	slotDB.parallel.baseTxIndex = baseTxIndex
-	slotDB.parallel.unconfirmedDBs = unconfirmedDBs
+	slotDB.parallel.unconfirmedDBs = &sync.Map{}
 	slotDB.parallel.useDAG = useDAG
 	return slotDB
 }
@@ -1391,8 +1391,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 		})
 	}
 	readLen := len(units)
-	//if readLen < 8 || isStage2 {
-	if true {
+	if readLen < 8 || isStage2 {
 		for _, unit := range units {
 			if err := hasKvConflict(slotDB, unit.addr, unit.key, unit.val, isStage2); err != nil {
 				return err
