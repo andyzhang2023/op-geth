@@ -141,11 +141,17 @@ func (pst *UncommittedDB) AddBalance(addr common.Address, amount *big.Int) {
 }
 
 func (pst *UncommittedDB) GetBalance(addr common.Address) *big.Int {
-	return new(big.Int).Set(pst.getOrNewObject(addr).balance)
+	if obj := pst.getObject(addr); obj != nil {
+		return new(big.Int).Set(obj.balance)
+	}
+	return big.NewInt(0)
 }
 
 func (pst *UncommittedDB) GetNonce(addr common.Address) uint64 {
-	return pst.getOrNewObject(addr).nonce
+	if obj := pst.getObject(addr); obj != nil {
+		return obj.nonce
+	}
+	return 0
 }
 
 func (pst *UncommittedDB) SetNonce(addr common.Address, nonce uint64) {
@@ -154,21 +160,31 @@ func (pst *UncommittedDB) SetNonce(addr common.Address, nonce uint64) {
 }
 
 func (pst *UncommittedDB) GetCodeHash(addr common.Address) common.Hash {
-	if code := pst.getCode(addr); code != nil {
-		return crypto.Keccak256Hash(code)
+	if obj := pst.getCode(addr); obj != nil {
+		return common.BytesToHash(obj.codeHash)
 	}
 	return types.EmptyCodeHash
 }
 
 func (pst *UncommittedDB) GetCode(addr common.Address) []byte {
-	return pst.getOrNewObject(addr).code
+	if obj := pst.getCode(addr); obj != nil {
+		return obj.code
+	}
+	return nil
 }
 
 func (pst *UncommittedDB) GetCodeSize(addr common.Address) int {
-	return pst.maindb.GetCodeSize(addr)
+	if obj := pst.getCode(addr); obj != nil {
+		return obj.codeSize
+	}
+	return 0
 }
 
-func (pst *UncommittedDB) SetCode(addr common.Address, code []byte)
+func (pst *UncommittedDB) SetCode(addr common.Address, code []byte) {
+	pst.getOrNewObject(addr)
+	pst.cache.setCode(addr, code)
+	pst.maindb.SetCode(addr, code)
+}
 
 func (pst *UncommittedDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
 	// this is a uncommitted db, so just get it from the maindb
@@ -362,7 +378,7 @@ func (pst *UncommittedDB) getDeletedObject(addr common.Address, maindb *StateDB)
 		// the object is not found, do a read record
 		return nil
 	}
-	// write it into the slavedb and return
+	// write it into the cache and return
 	pst.cache[addr] = copyObj(obj)
 	return pst.cache[addr]
 }
@@ -400,7 +416,8 @@ func (pst *UncommittedDB) getOrNewObject(addr common.Address) *state {
 // getCode returns the code for the given address or nil if not found.
 // 1. it first gets from the cache.
 // 2. if not found, then get from the maindb, and then record it in the cache.
-func (pst *UncommittedDB) getCode(addr common.Address) (code []byte) {
+func (pst *UncommittedDB) getCode(addr common.Address) *state {
+	var code []byte
 	var codeHash = types.EmptyCodeHash
 	var state *state = nil
 	defer func() {
@@ -411,7 +428,7 @@ func (pst *UncommittedDB) getCode(addr common.Address) (code []byte) {
 	// the account's code found in the cache, return it, and no need to record the reads again
 	obj := pst.getObject(addr)
 	if obj != nil && obj.codeIsLoaded() {
-		return obj.code
+		return obj
 	}
 	// now we known the code is not updated into cache, we need to update it after getting it from maindb
 	defer func() {
@@ -428,7 +445,7 @@ func (pst *UncommittedDB) getCode(addr common.Address) (code []byte) {
 	// need to copy the balance, nonce and other common fields, if this is the first time to touch this object.
 	state = copyObj(mainobj)
 	codeHash = crypto.Keccak256Hash(code)
-	return code
+	return state
 }
 
 func currState(obj *stateObject, addr common.Address) *state {
@@ -465,6 +482,8 @@ type state struct {
 func (s *state) markAllModified() {
 	s.modified |= ModifyBalance
 	s.modified |= ModifyNonce
+	// @TODO confirm: whether the code should be reset or not?
+	// @TODO confirm: whether the state should be reset or not?
 	s.modified |= ModifyCode
 	s.modified |= ModifyState
 }
@@ -606,6 +625,7 @@ func (wst writes) create(addr common.Address) *state {
 		state:   make(map[common.Hash]common.Hash),
 		balance: big.NewInt(0),
 		nonce:   0,
+		// @TODO need to init code and state?
 	}
 	wst[addr].modified |= ModifyCreate
 	wst[addr].markAllModified()
@@ -618,8 +638,10 @@ func (wst writes) selfDestruct(addr common.Address) {
 		return
 	}
 	// reset all fields, except the code
+	// @TODO confirm: whether the code should be reset or not?
 	obj.selfDestruct = true
 	obj.balance = big.NewInt(0)
+	obj.nonce = 0
 	obj.modified |= ModifySelfDestruct
 	obj.markAllModified()
 }
