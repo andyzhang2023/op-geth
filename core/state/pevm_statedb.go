@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -148,15 +149,19 @@ func (pst *UncommittedDB) GetNonce(addr common.Address) uint64 {
 }
 
 func (pst *UncommittedDB) SetNonce(addr common.Address, nonce uint64) {
+	pst.getOrNewObject(addr)
 	pst.cache.setNonce(addr, nonce)
 }
 
 func (pst *UncommittedDB) GetCodeHash(addr common.Address) common.Hash {
-	return common.Hash{}
+	if code := pst.getCode(addr); code != nil {
+		return crypto.Keccak256Hash(code)
+	}
+	return types.EmptyCodeHash
 }
 
 func (pst *UncommittedDB) GetCode(addr common.Address) []byte {
-	return nil
+	return pst.getOrNewObject(addr).code
 }
 
 func (pst *UncommittedDB) GetCodeSize(addr common.Address) int {
@@ -392,6 +397,40 @@ func (pst *UncommittedDB) getOrNewObject(addr common.Address) *state {
 	return pst.cache.create(addr)
 }
 
+// getCode returns the code for the given address or nil if not found.
+// 1. it first gets from the cache.
+// 2. if not found, then get from the maindb, and then record it in the cache.
+func (pst *UncommittedDB) getCode(addr common.Address) (code []byte) {
+	var codeHash = types.EmptyCodeHash
+	var state *state = nil
+	defer func() {
+		// update the reads record
+		pst.reads.recordCodeOnce(addr, codeHash, code, state)
+	}()
+
+	// the account's code found in the cache, return it, and no need to record the reads again
+	obj := pst.getObject(addr)
+	if obj != nil && obj.codeIsLoaded() {
+		return obj.code
+	}
+	// now we known the code is not updated into cache, we need to update it after getting it from maindb
+	defer func() {
+		pst.cache[addr].code = code
+		pst.cache[addr].codeHash = codeHash[:]
+		pst.cache[addr].codeSize = len(code)
+	}()
+	mainobj := pst.maindb.getStateObject(addr)
+	// the account doesn't exist in the maindb, just return nil
+	if mainobj == nil {
+		return nil
+	}
+	code = mainobj.Code()
+	// need to copy the balance, nonce and other common fields, if this is the first time to touch this object.
+	state = copyObj(mainobj)
+	codeHash = crypto.Keccak256Hash(code)
+	return code
+}
+
 func currState(obj *stateObject, addr common.Address) *state {
 	if obj == nil {
 		return &state{addr: addr, created: true, state: make(map[common.Hash]common.Hash)}
@@ -416,6 +455,7 @@ type state struct {
 	//@TODO code is lazy loaded, be careful to record its state
 	code         []byte
 	codeHash     []byte
+	codeSize     int // when codeSize == -1, it means the code is unloaded
 	state        map[common.Hash]common.Hash
 	selfDestruct bool
 	created      bool
@@ -471,8 +511,12 @@ func (s *state) empty() bool {
 	return s.nonce == 0 && s.balance.Sign() == 0 && bytes.Equal(s.codeHash, types.EmptyCodeHash.Bytes())
 }
 
+func (s *state) codeIsLoaded() bool {
+	return s.codeSize != -1
+}
+
 func copyObj(obj *stateObject) *state {
-	// we don't copy the `code` and `state` here, because they are lazy loaded.
+	// we don't copy the fields of `code` and `state` here, because they are lazy loaded.
 	// we don't copy the `created` eigher, because it true only when the object is nil, which means "it was created newly by the uncommited db".
 	// we need to copy the fields `deleted`, because it identifies whether the object is deleted or not.
 	return &state{
@@ -480,6 +524,7 @@ func copyObj(obj *stateObject) *state {
 		balance:      new(big.Int).Set(obj.Balance()),
 		selfDestruct: obj.selfDestructed,
 		deleted:      obj.deleted, // deleted is true when a "selfDestruct=true" object is finalized. more details can be found in the method Finalize() of StateDB
+		codeSize:     -1,          // mark the code "unloaded"
 	}
 }
 
@@ -489,7 +534,7 @@ func (sts reads) recordOnce(addr common.Address, st *state) *state {
 	if _, ok := sts[addr]; !ok {
 		if st == nil {
 			// this is a newly created object
-			sts[addr] = &state{addr: addr, created: true, state: make(map[common.Hash]common.Hash)}
+			sts[addr] = &state{addr: addr, created: true, state: make(map[common.Hash]common.Hash), codeSize: -1}
 		} else {
 			sts[addr] = st
 		}
@@ -497,10 +542,23 @@ func (sts reads) recordOnce(addr common.Address, st *state) *state {
 	return st
 }
 
-func (sts reads) recordKVOnce(addr common.Address, key, val common.Hash, maindb *StateDB) {
+func (sts reads) recordKVOnce(addr common.Address, key, val common.Hash, st *state) {
+	obj := sts.recordOnce(addr, st)
+	if _, ok := obj.state[key]; !ok {
+		obj.state[key] = val
+	}
 }
 
-func (sts reads) recordCodeOnce(addr common.Address, key, val common.Hash, maindb *StateDB) {
+func (sts reads) recordCodeOnce(addr common.Address, codeHash common.Hash, code []byte, st *state) {
+	sts.recordOnce(addr, st)
+	// we can't check whether the code is loaded or not, by checking codeHash == nil or code == nil (maybe the code is empty)
+	// so we need another fields to record the code previous state.
+	// and that is the `codeSize`, when codeSize == -1, it means the code is unloaded.
+	if !st.codeIsLoaded() {
+		sts[addr].codeHash = codeHash[:]
+		sts[addr].code = code
+		sts[addr].codeSize = len(code)
+	}
 }
 
 // ===============================================
@@ -559,10 +617,11 @@ func (wst writes) selfDestruct(addr common.Address) {
 	if obj == nil {
 		return
 	}
+	// reset all fields, except the code
 	obj.selfDestruct = true
 	obj.balance = big.NewInt(0)
 	obj.modified |= ModifySelfDestruct
-	wst[addr].markAllModified()
+	obj.markAllModified()
 }
 
 func (wst writes) getOrNew(addr common.Address) *state {
