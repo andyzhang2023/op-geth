@@ -851,7 +851,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		res := p.executeInSlot(0, ptr)
 		if res.err != nil {
-			log.Trace("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
+			log.Debug("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
 			atomic.AddInt32(&executeFailed, 1)
 			atomic.AddInt32(&p.debugConflictRedoNum, 1)
 		}
@@ -869,7 +869,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			if result.err != nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
 				atomic.AddInt32(&confirmedFailed, 1)
-				log.Trace("ProcessParallel confirm tx failed", ",block=", header.Number, ",txIndex=", result.txReq.txIndex, ",err=", result.err)
+				log.Debug("ProcessParallel confirm tx failed", ",block=", header.Number, ",txIndex=", result.txReq.txIndex, ",err=", result.err)
 				return fmt.Errorf("confirmed failed, txIndex:%d, err:%s", result.txReq.txIndex, result.err)
 			}
 			commonTxs = append(commonTxs, result.txReq.tx)
