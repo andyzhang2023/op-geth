@@ -13,7 +13,17 @@ import (
 
 // UncommittedDB is a wrapper of StateDB, which records all the writes of the state.
 // It is designed for parallel running of the EVM.
-// An UncommittedDB instance only serves one transaction, and will be destruct after the transaction is executed.
+// All fields of UncommittedDB survive in the scope of a transaction.
+// Here is the original score of each field in the maindb(StateDB):
+// |------------------|---------|---------------------|------------------------|
+// |  field           |  score  |  need to be merged  |  need to be committed  |
+// |------------------|---------|---------------------|------------------------|
+// | accessList       |  block: before Berlin hardfork ; transaction : after Berlin hardfork |  no  |  no  |
+// | transientStorage | transaction |  no   |  no   |
+// | objects          | block   |  yes  |  yes  |
+// | refund           | block   |  yes  |  yes  |
+// | preimages        | block   |  no   |  no   |
+// |------------------|---------|-------|-------|
 type UncommittedDB struct {
 	discarded bool
 
@@ -25,17 +35,18 @@ type UncommittedDB struct {
 	// accessList
 	accessList *accessList
 
+	// in the maindb, transientStorage survives only in the scope of a transaction, and no need to
 	transientStorage transientStorage
 
 	// object reads and writes
 	reads reads
 	cache writes
 
-	// refund reads and writes
+	// in the maindb, refund survives in the scope of block; and will be reset to 0 whenever a transaction's modification is Finalized to trie .
 	prevRefund *uint64
 	refund     uint64
 
-	// preimages reads and writes
+	// in the maindb, preimages survives in the scope of block
 	preimages map[common.Hash][]byte
 
 	maindb *StateDB
