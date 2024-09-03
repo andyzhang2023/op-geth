@@ -188,6 +188,15 @@ func NewTxLevels(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
 		collected[tx.txIndex] = true
 	}
 
+	nodependies := make(TxLevel, 0, 8)
+	appendNodependies := func(tx *ParallelTxRequest) {
+		if collected[tx.txIndex] {
+			return
+		}
+		nodependies = append(nodependies, tx)
+		collected[tx.txIndex] = true
+	}
+
 	dep2all := make([]TxLevel, 0, 8)
 	appendDepAll := func(tx *ParallelTxRequest) {
 		if collected[tx.txIndex] {
@@ -223,14 +232,19 @@ func NewTxLevels(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
 			appendDepAll(tx)
 
 		default:
-			appendNormal(tx, level)
-			for _, txIndex := range dep.TxIndexes {
-				if int(txIndex) >= len(all) || all[txIndex] == nil {
-					// TODO add logs
-					// broken DAG, just ignored it
-					return fmt.Errorf("broken DAG, txIndex:%d, len(all):%d", txIndex, len(all))
+			if len(dep.TxIndexes) != 0 {
+				appendNormal(tx, level)
+				for _, txIndex := range dep.TxIndexes {
+					if int(txIndex) >= len(all) || all[txIndex] == nil {
+						// TODO add logs
+						// broken DAG, just ignored it
+						return fmt.Errorf("broken DAG, txIndex:%d, len(all):%d", txIndex, len(all))
+					}
+					putCurrentLevel(all[txIndex], level+1)
 				}
-				putCurrentLevel(all[txIndex], level+1)
+			} else {
+				// no dependencies
+				appendNodependies(tx)
 			}
 		}
 		return nil
@@ -249,9 +263,16 @@ func NewTxLevels(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
 	}
 
 	// merge the normal levels and executed levels
+	// 1. run the executed levels first
+	// 2. then the "nodepnencies" levels
+	// 3. then the normal levels(who have dependencies)
+	// 4. then the dep2all levels(who depend on all)
 	final := make(TxLevels, 0, len(levels)+len(execlutedLevels)+len(dep2all))
 	for i := len(execlutedLevels) - 1; i >= 0; i-- {
 		final = append(final, execlutedLevels[i])
+	}
+	if len(nodependies) > 0 {
+		final = append(final, nodependies)
 	}
 	for i := len(levels) - 1; i >= 0; i-- {
 		final = append(final, levels[i])

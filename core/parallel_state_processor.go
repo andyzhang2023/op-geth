@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/metrics"
 
@@ -843,8 +844,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
 	}
 	txLevels := NewTxLevels(allTxsReq, runtimeDag)
-	log.Info("ProcessParallel execute block ", ",block=", header.Number, ",levels=", len(txLevels), ",parallelNum=", cap(runner), "\n")
-
+	starttime := time.Now()
 	var executeFailed, confirmedFailed int32 = 0, 0
 
 	// wait until all Txs have processed.
@@ -876,7 +876,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			receipts = append(receipts, result.receipt)
 			return nil
 		})
-	log.Info("ProcessParallel execute block done ", ",block=", header.Number, ",levels=", len(txLevels), ",executeFailed=", executeFailed, ",confirmFailed=", confirmedFailed, "\n")
+	log.Info("ProcessParallel execute block done", "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil)
 	if err != nil {
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
