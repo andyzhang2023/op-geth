@@ -889,7 +889,9 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	}
 
 	// clean up when the block is processed
-	p.doCleanUp()
+	go func() {
+		p.doCleanUp()
+	}()
 
 	// len(commonTxs) could be 0, such as: https://bscscan.com/block/14580486
 	if len(commonTxs) > 0 && p.debugConflictRedoNum > 0 {
