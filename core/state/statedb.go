@@ -1377,6 +1377,25 @@ func (s *StateDB) PutSyncPool() {
 	snapStoragePool.Put(s.snapStorage)
 }
 
+// reads map[addr] State{}
+// writes map[addr] State{}
+
+// Objects:
+//	1. balance
+//  2. nonce
+//  3. code -> codeHash
+//  4. kv -> storage
+
+// maindb.
+
+// preimage: map,
+
+// refund
+
+// accesslist: Berlin -> new()
+
+// logs: append
+
 func NewEmptySlotDB() *ParallelStateDB {
 	parallel := ParallelState{
 		// The stateObjects in Parallel is thread-local.

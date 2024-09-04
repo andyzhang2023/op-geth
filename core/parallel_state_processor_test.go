@@ -79,7 +79,7 @@ func genesisAlloc(addresses []*keypair, funds *big.Int) GenesisAlloc {
 }
 
 func BenchmarkAkaka(b *testing.B) {
-	addrNum := 500
+	addrNum := 10000
 	// Configure and generate a sample block chain
 	funds := big.NewInt(1000000000000000)
 	addresses := generateAddress(addrNum)
@@ -98,8 +98,6 @@ func BenchmarkAkaka(b *testing.B) {
 		signer = types.LatestSigner(gspec.Config)
 	)
 
-	proc := parallel(make(chan func()))
-	proc.start(16)
 	_, blocks, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), 2, func(i int, block *BlockGen) {
 		block.SetCoinbase(common.Address{0x00})
 		txs := make([]*types.Transaction, len(addresses))
@@ -118,14 +116,15 @@ func BenchmarkAkaka(b *testing.B) {
 			block.AddTx(txs[i])
 		}
 	})
-	// Import the chain as an archive node for the comparison baseline
-	archiveDb := rawdb.NewMemoryDatabase()
-	archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil)
-	defer archive.Stop()
-	defer proc.close()
 
 	b.ResetTimer()
-	if n, err := archive.InsertChain(blocks); err != nil {
-		panic(fmt.Sprintf("failed to process block %d: %v", n, err))
+	for i := 0; i < b.N; i++ {
+		// Import the chain as an archive node for the comparison baseline
+		archiveDb := rawdb.NewMemoryDatabase()
+		archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil)
+		if n, err := archive.InsertChain(blocks); err != nil {
+			panic(fmt.Sprintf("failed to process block %d: %v", n, err))
+		}
+		archive.Stop()
 	}
 }
