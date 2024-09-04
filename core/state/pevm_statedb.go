@@ -26,11 +26,12 @@ import (
 // | preimages        | block   |  no   |  no   |
 // |------------------|---------|-------|-------|
 type UncommittedDB struct {
+	isBerlin  bool
 	discarded bool
 
 	// transaction context
 	txHash  common.Hash
-	txIndex uint
+	txIndex int
 	logs    []*types.Log
 
 	// accessList
@@ -61,7 +62,7 @@ func NewUncommittedDB(maindb *StateDB) *UncommittedDB {
 	}
 }
 
-func (pst *UncommittedDB) SetTxContext(txHash common.Hash, txIndex uint) {
+func (pst *UncommittedDB) SetTxContext(txHash common.Hash, txIndex int) {
 	pst.txHash = txHash
 	pst.txIndex = txIndex
 }
@@ -206,13 +207,13 @@ func (pst *UncommittedDB) GetState(addr common.Address, hash common.Hash) common
 
 func (pst *UncommittedDB) SetState(addr common.Address, key, value common.Hash) {
 	obj := pst.getOrNewObject(addr)
-	value, ok := obj.state[key]
+	oldvalue, ok := obj.state[key]
 	// it might be not loaded.
 	if !ok {
 		// load the state from the maindb, to save into the previous state reads
-		value = pst.maindb.GetState(addr, key)
+		oldvalue = pst.maindb.GetState(addr, key)
 	}
-	pst.reads.recordKVOnce(addr, key, value)
+	pst.reads.recordKVOnce(addr, key, oldvalue)
 	pst.cache.setState(addr, key, value)
 }
 
@@ -236,7 +237,7 @@ func (pst *UncommittedDB) Selfdestruct6780(addr common.Address) {
 		return
 	}
 	if obj.created {
-		pst.SelfDestruct(addr)
+		pst.cache.selfDestruct(addr)
 	}
 }
 
@@ -320,7 +321,7 @@ func (pst *UncommittedDB) Snapshot() int {
 // Logs Methods
 func (pst *UncommittedDB) AddLog(log *types.Log) {
 	log.TxHash = pst.txHash
-	log.TxIndex = pst.txIndex
+	log.TxIndex = uint(pst.txIndex)
 	// we don't need to set Index now, because it will be recalculated when merging into maindb
 	log.Index = 0
 	pst.logs = append(pst.logs, log)
@@ -342,20 +343,94 @@ func (pst *UncommittedDB) Preimages() map[common.Hash][]byte {
 
 // check conflict
 func (pst *UncommittedDB) HasConflict() error {
-	// 1. check preimages reads conflict
-	// 2. check accesslist reads conflict
+	// 1. check preimages reads conflict (@TODO preimage should be lazy loaded)
+	// 2. check accesslist reads conflict (@TODO confirm: whether the accesslist should be checked or not)
 	// 3. check logs conflict (check the txIndex)
 	// 4. check object conflict
+	if err := pst.hasLogConflict(pst.maindb); err != nil {
+		return err
+	}
+	if err := pst.hasRefundConflict(pst.maindb); err != nil {
+		return err
+	}
+	return pst.reads.conflictsTo(pst.maindb)
+}
+
+func (pst *UncommittedDB) hasLogConflict(maindb *StateDB) error {
+	if pst.txIndex == 0 {
+		// this is the first transaction in the block,
+		// so the logs should be empty
+		if maindb.logSize != 0 {
+			return fmt.Errorf("conflict logs, logSize: %d, expected 0", maindb.logSize)
+		}
+		if len(maindb.logs) != 0 {
+			return fmt.Errorf("conflict logs, logsLen: %d, expected 0", len(maindb.logs))
+		}
+		if maindb.txIndex != 0 {
+			return fmt.Errorf("conflict logs, txIndex: %d, expected 0", maindb.txIndex)
+		}
+		return nil
+	} else {
+		// this is not the first transaction in the block
+		if maindb.txIndex != int(pst.txIndex)-1 {
+			return fmt.Errorf("conflict logs, txIndex: %d, expected %d", maindb.txIndex, pst.txIndex)
+		}
+		return nil
+	}
+}
+
+func (pst *UncommittedDB) hasRefundConflict(maindb *StateDB) error {
+	// never read
+	if pst.prevRefund == nil {
+		return nil
+	}
+	if *pst.prevRefund != maindb.GetRefund() {
+		return fmt.Errorf("conflict refund, expected:%d, actual:%d", *pst.prevRefund, maindb.GetRefund())
+	}
 	return nil
 }
 
 func (pst *UncommittedDB) Merge() error {
+	if pst.discarded {
+		// all the writes of this db will be discarded, including:
+		// 1. accessList
+		// 2. preimages
+		// 3. obj states
+		// 4. refund
+		// so we don't need to merge anything.
+		return nil
+	}
 	// 1. merge preimages writes
+	for hash, preimage := range pst.preimages {
+		pst.maindb.preimages[hash] = preimage
+	}
 	// 2. merge accesslist writes
+	// we need to merge accessList before Berlin hardfork
+	if !pst.isBerlin {
+		for addr, _ := range pst.accessList.addresses {
+			pst.maindb.accessList.AddAddress(addr)
+		}
+		for _, slots := range pst.accessList.slots {
+			for slot, _ := range slots {
+				//@TODO need to do more merge work
+				_ = slot
+			}
+		}
+	}
 	// 3. merge logs writes
-	// 4. merge object conflict
-	pst.maindb.Finalise(true)
+	for _, st := range pst.reads {
+		st.merge(pst.maindb)
+	}
+	// 4. merge object states
+	for _, log := range pst.logs {
+		pst.maindb.AddLog(log)
+	}
+	// 5. merge refund
+	pst.maindb.refund += pst.refund
 	return nil
+}
+
+func (pst *UncommittedDB) diffPreimages(maindb *StateDB) {
 }
 
 // getDeletedObj returns the state object for the given address or nil if not found.
@@ -374,7 +449,7 @@ func (pst *UncommittedDB) Merge() error {
 //
 // it is notable that the getObj() will not be called parallelly, but the getStateObject() of maindb will be.
 // so we need:
-//  1. the maindb's cache is not thread safe
+//  1. the uncommittedDB's cache is not thread safe
 //  2. the maindb's cache is thread safe
 func (pst *UncommittedDB) getDeletedObject(addr common.Address, maindb *StateDB) (o *state) {
 	defer func() {
@@ -500,17 +575,17 @@ func (s state) conflicts(maindb *StateDB) error {
 	if s.selfDestruct != obj.selfDestructed {
 		return errors.New("conflict: destruct")
 	}
-	if s.balance.Cmp(obj.Balance()) != 0 {
-		return fmt.Errorf("conflict: balance, expected:%d, actual:%d", s.balance.Uint64(), obj.data.Balance.Uint64())
-	}
 	if s.nonce != obj.Nonce() {
 		return fmt.Errorf("conflict: nonce, expected:%d, actual:%d", s.nonce, obj.Nonce())
 	}
-	// @TODO code is lazy loaded, and should be checked as less as possible.
-	if !bytes.Equal(obj.Code(), s.code) {
+	if s.balance.Cmp(obj.Balance()) != 0 {
+		return fmt.Errorf("conflict: balance, expected:%d, actual:%d", s.balance.Uint64(), obj.data.Balance.Uint64())
+	}
+	// code is lazy loaded, and should be checked as less as possible.
+	if s.codeIsLoaded() && !bytes.Equal(obj.Code(), s.code) {
 		return fmt.Errorf("conflict: code, expected len:%d, actual len:%d", len(s.code), len(obj.Code()))
 	}
-	// @TODO state is lazy loaded, and should be checked as less as possible , too.
+	// state is lazy loaded, and should be checked as less as possible , too.
 	for key, val := range s.state {
 		if obj.GetState(key).Cmp(val) != 0 {
 			return fmt.Errorf("conflict: state, key:%s, expected:%s, actual:%s", key.String(), val.String(), obj.GetState(key).String())
@@ -519,8 +594,30 @@ func (s state) conflicts(maindb *StateDB) error {
 	return nil
 }
 
-func (s state) merge(maindb *StateDB) error {
-	return nil
+func (s state) merge(maindb *StateDB) {
+	// 1. merge the balance
+	// 2. merge the nonce
+	// 3. merge the code
+	// 4. merge the state
+	if s.modified|ModifySelfDestruct != 0 {
+		maindb.SelfDestruct(s.addr)
+	}
+	obj := maindb.GetOrNewStateObject(s.addr)
+	if s.modified&ModifyBalance != 0 {
+		obj.SetBalance(s.balance)
+	}
+	if s.modified&ModifyNonce != 0 {
+		obj.setNonce(s.nonce)
+	}
+	if s.modified&ModifyCode != 0 {
+		obj.SetCode(common.BytesToHash(s.codeHash), s.code)
+	}
+	if s.modified&ModifyState != 0 {
+		for key, val := range s.state {
+			obj.SetState(key, val)
+		}
+		//TODO: should we reset all kv pairs if the s.state == nil ?
+	}
 }
 
 func (s *state) empty() bool {
@@ -577,6 +674,15 @@ func (sts reads) recordCodeOnce(addr common.Address, codeHash common.Hash, code 
 	}
 }
 
+func (sts reads) conflictsTo(maindb *StateDB) error {
+	for addr, st := range sts {
+		if err := st.conflicts(maindb); err != nil {
+			return fmt.Errorf("conflict at address %s: %s", addr.String(), err.Error())
+		}
+	}
+	return nil
+}
+
 // ===============================================
 // Writes Methods
 // it is used to record all the writes of the uncommitted db.
@@ -588,8 +694,8 @@ const (
 	ModifyBalance
 	ModifyCode
 	ModifyState
-	ModifyCreate
 	ModifySelfDestruct
+	ModifySelfDestruct6780
 )
 
 func (wst writes) setBalance(addr common.Address, balance *big.Int) {
@@ -618,12 +724,14 @@ func (wst writes) setCode(addr common.Address, code []byte) {
 func (wst writes) create(addr common.Address) *state {
 	wst[addr] = &state{
 		addr:    addr,
-		state:   make(map[common.Hash]common.Hash),
 		balance: big.NewInt(0),
 		nonce:   0,
-		// @TODO need to init code and state?
+		//need to init code & codeHash
+		code:     nil,
+		codeHash: types.EmptyCodeHash.Bytes(),
+		//need to reset storage
+		state: make(map[common.Hash]common.Hash),
 	}
-	wst[addr].modified |= ModifyCreate
 	wst[addr].markAllModified()
 	return wst[addr]
 }
@@ -633,18 +741,11 @@ func (wst writes) selfDestruct(addr common.Address) {
 	if obj == nil {
 		return
 	}
-	// reset all fields, except the code
-	// @TODO confirm: whether the code should be reset or not?
-	obj.selfDestruct = true
-	obj.balance = big.NewInt(0)
-	obj.nonce = 0
 	obj.modified |= ModifySelfDestruct
-	obj.markAllModified()
 }
 
-func (wst writes) getOrNew(addr common.Address) *state {
-	if wst[addr] == nil {
-		return wst.create(addr)
+func (wst writes) merge(maindb *StateDB) {
+	for _, st := range wst {
+		st.merge(maindb)
 	}
-	return wst[addr]
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 )
@@ -276,7 +277,101 @@ func TestSelfDestruct(t *testing.T) {
 }
 
 func TestSelfDestruct6780(t *testing.T) {
-	// what's it used for ?
+	// case 1. no previous state
+	txs := Txs{
+		{
+			{"SelfDestruct6780", Address1},
+		},
+	}
+	check := CheckState{
+		BeforeMerge: uncommitedState{
+			Uncommited: []Check{
+				{"obj", Address1, "nil"},
+			},
+			Maindb: []Check{
+				{"obj", Address1, "nil"},
+			},
+		},
+		AfterMerge: []Check{
+			{"obj", Address1, "nil"},
+		},
+	}
+	if err := runCase(txs, newStateDB(), newUncommittedDB(newStateDB()), check); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// case 2. self destruct an account with previous state
+	txs = Txs{
+		{
+			{"Create", Address1},
+			{"AddBalance", Address1, big.NewInt(100)},
+			{"SelfDestruct6780", Address1},
+		},
+	}
+	check = CheckState{
+		AfterMerge: []Check{
+			{"balance", Address1, big.NewInt(0)},
+			{"nonce", Address1, 0},
+			{"obj", Address1, "nil"},
+		},
+	}
+	if err := runCase(txs, newStateDB(), newUncommittedDB(newStateDB()), check); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// case 3. create an account after self destruct
+	txs = Txs{
+		{
+			{"Create", Address1},
+			{"AddBalance", Address1, big.NewInt(100)},
+			{"SelfDestruct6780", Address1},
+			{"Create", Address1},
+		},
+	}
+	check = CheckState{
+		AfterMerge: []Check{
+			{"balance", Address1, big.NewInt(100)},
+			{"nonce", Address1, 0},
+		},
+	}
+	if err := runCase(txs, newStateDB(), newUncommittedDB(newStateDB()), check); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// case 4. self destruct 6780 should not work if the account is not empty
+	maindb := newStateDB()
+	prepare := Txs{
+		{
+			{"Create", Address1},
+			{"AddBalance", Address1, big.NewInt(100)},
+			{"SetNonce", Address1, 1},
+		},
+	}
+	prepare.Call(maindb)
+	maindb.Finalise(true)
+	txs = Txs{
+		{
+			{"AddBalance", Address1, big.NewInt(100)},
+			{"SelfDestruct6780", Address1},
+		},
+	}
+	check = CheckState{
+		BeforeRun: uncommitedState{
+			Uncommited: []Check{
+				{"balance", Address1, big.NewInt(200)},
+				{"nonce", Address1, 1},
+			},
+			Maindb: []Check{
+				{"balance", Address1, big.NewInt(200)},
+				{"nonce", Address1, 1},
+			},
+		},
+		AfterMerge: []Check{
+			{"balance", Address1, big.NewInt(200)},
+			{"nonce", Address1, 2},
+		},
+	}
+	if err := runCase(txs, newStateDB(), newUncommittedDB(newStateDB()), check); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+
 }
 
 func TestExistsAndEmpty(t *testing.T) {
@@ -822,7 +917,12 @@ func (txs Txs) Call(db vm.StateDB) error {
 }
 
 func newStateDB() *StateDB {
-	return &StateDB{}
+	rawdb.NewMemoryDatabase()
+	st, err := New(common.Hash{}, nil, nil)
+	if err != nil {
+		panic(err)
+	}
+	return st
 }
 
 func newUncommittedDB(db *StateDB) *UncommittedDB {
