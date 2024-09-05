@@ -1,13 +1,21 @@
 package core
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"log"
+	"math/big"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/params"
 )
 
 // mock transaction via ParallelTxRequest and ParallelTxResult. and the methods we need to mock is "transfer balance from on address to other"
@@ -487,43 +495,155 @@ func assertEqual(actual TxLevels, expected [][]uint64, t *testing.T) {
 	}
 }
 
+func getBlockTransactions(url string, blockNumber int64) (types.Transactions, error) {
+	client, err := ethclient.Dial(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to the Ethereum client: %v", err)
+	}
+
+	block, err := client.BlockByNumber(context.Background(), big.NewInt(blockNumber))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get block: %v", err)
+	}
+
+	return block.Transactions(), nil
+}
+
+func loadChainConfigFromGenesis(filePath string) (*params.ChainConfig, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open genesis file: %v", err)
+	}
+	defer file.Close()
+
+	byteValue, err := ioutil.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read genesis file: %v", err)
+	}
+
+	var genesis Genesis
+	if err := json.Unmarshal(byteValue, &genesis); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal genesis file: %v", err)
+	}
+
+	return genesis.Config, nil
+}
+
 func TestShowDAG(t *testing.T) {
-	//	fetchTxIndexes := func(level TxLevel) []int {
-	//		indexes := make([]int, len(level))
-	//		for i, tx := range level {
-	//			indexes[i] = tx.txIndex
-	//		}
-	//		return indexes
-	//	}
+	// Example usage
+	genesisFilePath := "/Users/awen/Desktop/Nodereal/aweneagle_projects/chain-infra/qa/gitops/qa-us/opbnb-qanet-ec-5/contracts-info/genesis.json"
+	chainConfig, err := loadChainConfigFromGenesis(genesisFilePath)
+	if err != nil {
+		log.Fatalf("Failed to load chain config: %v", err)
+	}
+	signer := types.LatestSigner(chainConfig)
 	_, dag, err := readTxDAGItemFromLine(block340670())
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("txCount:%d\n", dag.TxCount())
-	nonces := make([]uint64, dag.TxCount())
-	for i := 0; i < dag.TxCount(); i++ {
-		nonces[i] = uint64(i) + 1
+	txs, err := getBlockTransactions("https://opbnb-qanet-ec-5-seq-pevm-2.bk.nodereal.cc", 340670)
+	if err != nil {
+		panic(err)
 	}
-	txs := nonces2txs(nonces)
-	fmt.Printf("txs:%d\n", len(txs))
-	levels := NewTxLevels(txs, dag)
-	fmt.Printf("levels:%d\n", len(levels))
-	//for i := 0; i < len(levels); i++ {
-	//	fmt.Printf("level [%d]: len=%d, elements:%v\n", i, len(levels[i]), fetchTxIndexes(levels[i]))
-	//}
+	//check dag[0]; it should be a deposit tx, and should have a exclude flag
+	if !dag.TxDep(0).CheckFlag(types.ExcludedTxFlag) {
+		panic("broken dag, deposit tx should have exclude flag")
+	}
+	var dependTo = func(a *types.Transaction, b *types.Transaction) bool {
+		if a.Nonce() <= b.Nonce() {
+			return false
+		}
+		aFromAddr, err := types.Sender(signer, a)
+		if err != nil {
+			panic(err)
+		}
+		bFromAddr, err := types.Sender(signer, b)
+		if err != nil {
+			panic(err)
+		}
+		aToAddr, bToAddr := *(a.To()), *(b.To())
 
-	for i := 0; i < dag.TxCount(); i++ {
-		dep := dag.TxDep(i)
-		switch true {
-		case dep.CheckFlag(types.ExcludedTxFlag):
-			fmt.Printf("tx[%d] excluded\n", i)
-		case dep.CheckFlag(types.NonDependentRelFlag):
-			fmt.Printf("tx[%d] non-dependent\n", i)
-		default:
-			fmt.Printf("tx[%d] dependencies:%v\n", i, dep.TxIndexes)
+		if aFromAddr.Cmp(bFromAddr) == 0 || aFromAddr.Cmp(bToAddr) == 0 {
+			return true
+		}
+		return aToAddr.Cmp(bFromAddr) == 0 || aToAddr.Cmp(bToAddr) == 0
+	}
+	fmt.Printf("total tx:%d, dag tx:%d\n", len(txs), dag.TxCount())
+	depCorrect, depWrong := 1, 0
+	for i := 1; i < len(txs); i++ {
+		var deps = map[int]struct{}{}
+		// no need to add tx[0], must be dependent on tx[0]
+		for j := 1; j < i; j++ {
+			if dependTo(txs[i], txs[j]) {
+				deps[j] = struct{}{}
+			}
+		}
+		ofrom, _ := types.Sender(signer, txs[i])
+		oto := txs[i].To()
+		temp := dag.TxDep(i).TxIndexes
+		// filter out 0
+		originDeps := make([]uint64, 0, len(temp))
+		for _, j := range originDeps {
+			if j != 0 {
+				originDeps = append(originDeps, j)
+			}
+		}
+		passed := true
+		if len(deps) != len(originDeps) {
+			fmt.Printf("tx[%d:%s] has %d deps, but dag has %d deps\n", i, txs[i].Hash().String(), len(deps), len(originDeps))
+			passed = false
+			//expected:
+			for ti := range originDeps {
+				from, _ := types.Sender(signer, txs[ti])
+				to := txs[ti].To()
+				fmt.Printf("expected tindex=%d, from=%s, to=%s => tindex=%d, from=%s, to=%s\n", i, ofrom, oto, ti, from, to)
+			}
+			//actual:
+			if len(deps) > 0 {
+				for ti := range deps {
+					from, _ := types.Sender(signer, txs[ti])
+					to := txs[ti].To()
+					fmt.Printf("tx[%d] actual from=%s, to=%s,  tindex=%d, from=%s, to=%s txhash=%s dag:%v, dagFlag:%d\n", i, ofrom, oto, ti, from, to, txs[ti].Hash().String(), dag.TxDep(ti).TxIndexes, dag.TxDep(ti).Flags)
+				}
+			} else {
+				fmt.Printf("actual tindex=%d, from=%s, to=%s => no txs\n", i, ofrom, oto)
+			}
+		} else {
+			for _, j := range originDeps {
+				if _, ok := deps[int(j)]; !ok {
+					fmt.Printf("tx[%d:%s] has %d deps, but dag has %d deps\n", i, txs[i].Hash().String(), len(deps), len(originDeps))
+					passed = false
+				}
+			}
+			if !passed {
+				//expected:
+				for ti := range originDeps {
+					from, _ := types.Sender(signer, txs[ti])
+					to := txs[ti].To()
+					fmt.Printf("expected tindex=%d, from=%s, to=%s => tindex=%d, from=%s, to=%s\n", i, ofrom, oto, ti, from, to)
+				}
+				//actual:
+				if len(deps) > 0 {
+					for ti := range deps {
+						from, _ := types.Sender(signer, txs[ti])
+						to := txs[ti].To()
+						fmt.Printf("tx[%d] actual from=%s, to=%s,  tindex=%d, from=%s, to=%s txhash=%s dag:%v, dagFlag:%d\n", i, ofrom, oto, ti, from, to, txs[ti].Hash().String(), dag.TxDep(ti).TxIndexes, dag.TxDep(ti).Flags)
+					}
+				} else {
+					fmt.Printf("actual tindex=%d, from=%s, to=%s => no txs\n", i, ofrom, oto)
+				}
+			}
+		}
+		if passed {
+			depCorrect++
+			fmt.Printf("tx[%d:%s] passed =====\n", i, txs[i].Hash().String())
+		} else {
+			fmt.Printf("tx[%d:%s] failed =====\n", i, txs[i].Hash().String())
+			depWrong++
 		}
 	}
 
+	fmt.Printf("total tx:%d, total dep:%d, depCorrect:%d, depWrong:%d\n", len(txs), dag.TxCount(), depCorrect, depWrong)
 }
 
 func TestNewLevel(t *testing.T) {
