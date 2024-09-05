@@ -642,24 +642,18 @@ func (pool *LegacyPool) ContentFrom(addr common.Address) ([]*types.Transaction, 
 // transactions and only return those whose **effective** tip is large enough in
 // the next pending execution environment.
 func (pool *LegacyPool) Pending(enforceTips bool) map[common.Address][]*txpool.LazyTransaction {
+	now := time.Now()
 	defer func(t0 time.Time) {
 		getPendingDurationTimer.Update(time.Since(t0))
 	}(time.Now())
 	pending := pool.pendingCache.dump(enforceTips)
 	// add debug logs
-	total := 0
-	pool.mu.Lock()
-	start := time.Now()
-	for _, list := range pool.pending {
-		total += list.Len()
-	}
-	duration := time.Since(start)
-	pool.mu.Unlock()
+	total := pool.pendingCache.pendingCount
 	pendingCount := pool.pendingCache.filteredCacheCount
 	if !enforceTips {
 		pendingCount = pool.pendingCache.allCacheCount
 	}
-	log.Info("Pending transactions for miner", "total", total, "pending", pendingCount, "requireTips", enforceTips, "cost", duration)
+	log.Info("Pending transactions for miner", "total", total, "pending", pendingCount, "requireTips", enforceTips, "cost", time.Since(now))
 	return pending
 }
 

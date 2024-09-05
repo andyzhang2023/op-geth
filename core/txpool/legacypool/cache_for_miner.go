@@ -17,10 +17,11 @@ var (
 
 // copy of pending transactions
 type cacheForMiner struct {
-	txLock   sync.Mutex
-	pending  map[common.Address]map[*types.Transaction]struct{}
-	locals   map[common.Address]bool
-	addrLock sync.Mutex
+	txLock       sync.Mutex
+	pendingCount int
+	pending      map[common.Address]map[*types.Transaction]struct{}
+	locals       map[common.Address]bool
+	addrLock     sync.Mutex
 
 	allCache           map[common.Address][]*txpool.LazyTransaction
 	filteredCache      map[common.Address][]*txpool.LazyTransaction
@@ -44,6 +45,7 @@ func (pc *cacheForMiner) add(txs types.Transactions, signer types.Signer) {
 	}
 	pc.txLock.Lock()
 	defer pc.txLock.Unlock()
+	pc.pendingCount += len(txs)
 	pendingCacheGauge.Inc(int64(len(txs)))
 	for _, tx := range txs {
 		addr, _ := types.Sender(signer, tx)
@@ -68,6 +70,7 @@ func (pc *cacheForMiner) del(txs types.Transactions, signer types.Signer) {
 		if !ok {
 			continue
 		}
+		pc.pendingCount -= 1
 		pendingCacheGauge.Dec(1)
 		delete(slots, tx)
 		if len(slots) == 0 {
