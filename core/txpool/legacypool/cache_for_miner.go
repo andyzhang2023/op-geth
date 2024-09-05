@@ -22,9 +22,11 @@ type cacheForMiner struct {
 	locals   map[common.Address]bool
 	addrLock sync.Mutex
 
-	allCache      map[common.Address][]*txpool.LazyTransaction
-	filteredCache map[common.Address][]*txpool.LazyTransaction
-	cacheLock     sync.Mutex
+	allCache           map[common.Address][]*txpool.LazyTransaction
+	filteredCache      map[common.Address][]*txpool.LazyTransaction
+	allCacheCount      int
+	filteredCacheCount int
+	cacheLock          sync.Mutex
 }
 
 func newCacheForMiner() *cacheForMiner {
@@ -108,9 +110,11 @@ func (pc *cacheForMiner) sync2cache(pool txpool.LazyResolver, filter func(txs ty
 				}
 			}
 			allLazy[addr] = lazies
+			pc.allCacheCount += len(lazies)
 			filteredLazies := lazies[:len(filterd)]
 			if len(filteredLazies) > 0 {
 				filteredLazy[addr] = filteredLazies
+				pc.filteredCacheCount += len(filteredLazies)
 			}
 		}
 	}

@@ -645,7 +645,22 @@ func (pool *LegacyPool) Pending(enforceTips bool) map[common.Address][]*txpool.L
 	defer func(t0 time.Time) {
 		getPendingDurationTimer.Update(time.Since(t0))
 	}(time.Now())
-	return pool.pendingCache.dump(enforceTips)
+	pending := pool.pendingCache.dump(enforceTips)
+	// add debug logs
+	total := 0
+	pool.mu.Lock()
+	start := time.Now()
+	for _, list := range pool.pending {
+		total += list.Len()
+	}
+	duration := time.Since(start)
+	pool.mu.Unlock()
+	pendingCount := pool.pendingCache.filteredCacheCount
+	if !enforceTips {
+		pendingCount = pool.pendingCache.allCacheCount
+	}
+	log.Info("Pending transactions for miner", "total", total, "pending", pendingCount, "requireTips", enforceTips, "cost", duration)
+	return pending
 }
 
 func (pool *LegacyPool) createFilter(gasPrice, baseFee *big.Int) func(txs types.Transactions, addr common.Address) types.Transactions {
