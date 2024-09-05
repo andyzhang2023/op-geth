@@ -9,6 +9,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/triedb/hashdb"
+	"github.com/ethereum/go-ethereum/trie/triedb/pathdb"
 )
 
 var Address1 = common.HexToAddress("0x1")
@@ -916,9 +919,37 @@ func (txs Txs) Call(db vm.StateDB) error {
 	return nil
 }
 
+func triedbConfig(StateScheme string) *trie.Config {
+	config := &trie.Config{
+		Preimages: true,
+		NoTries:   false,
+	}
+	if StateScheme == rawdb.HashScheme {
+		config.HashDB = &hashdb.Config{
+			CleanCacheSize: 1 * 1024 * 1024,
+		}
+	}
+	if StateScheme == rawdb.PathScheme {
+		config.PathDB = &pathdb.Config{
+			//TrieNodeBufferType:   c.PathNodeBuffer,
+			//StateHistory:         c.StateHistory,
+			CleanCacheSize: 1 * 1024 * 1024,
+			DirtyCacheSize: 1 * 1024 * 1024,
+			//ProposeBlockInterval: c.ProposeBlockInterval,
+			//NotifyKeep:           keepFunc,
+			//JournalFilePath:      c.JournalFilePath,
+			//JournalFile:          c.JournalFile,
+		}
+	}
+	return config
+}
+
 func newStateDB() *StateDB {
-	rawdb.NewMemoryDatabase()
-	st, err := New(common.Hash{}, nil, nil)
+	memdb := rawdb.NewMemoryDatabase()
+	// Open trie database with provided config
+	triedb := trie.NewDatabase(memdb, triedbConfig(rawdb.HashScheme))
+	stateCache := NewDatabaseWithNodeDB(memdb, triedb)
+	st, err := New(common.Hash{}, stateCache, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -926,7 +957,7 @@ func newStateDB() *StateDB {
 }
 
 func newUncommittedDB(db *StateDB) *UncommittedDB {
-	return &UncommittedDB{}
+	return NewUncommittedDB(db)
 }
 
 func exampleRun(t *testing.T) {

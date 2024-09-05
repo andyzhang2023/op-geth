@@ -56,9 +56,10 @@ type UncommittedDB struct {
 
 func NewUncommittedDB(maindb *StateDB) *UncommittedDB {
 	return &UncommittedDB{
-		accessList:       maindb.accessList.Copy(),
-		transientStorage: maindb.transientStorage.Copy(),
+		accessList:       newAccessList(),
+		transientStorage: newTransientStorage(),
 		preimages:        make(map[common.Hash][]byte),
+		maindb:           maindb,
 	}
 }
 
@@ -342,7 +343,7 @@ func (pst *UncommittedDB) Preimages() map[common.Hash][]byte {
 }
 
 // check conflict
-func (pst *UncommittedDB) HasConflict() error {
+func (pst *UncommittedDB) conflictsToMaindb() error {
 	// 1. check preimages reads conflict (@TODO preimage should be lazy loaded)
 	// 2. check accesslist reads conflict (@TODO confirm: whether the accesslist should be checked or not)
 	// 3. check logs conflict (check the txIndex)
@@ -399,6 +400,9 @@ func (pst *UncommittedDB) Merge() error {
 		// 4. refund
 		// so we don't need to merge anything.
 		return nil
+	}
+	if err := pst.conflictsToMaindb(); err != nil {
+		return err
 	}
 	// 1. merge preimages writes
 	for hash, preimage := range pst.preimages {
