@@ -49,6 +49,82 @@ var (
 	testAddress = common.HexToAddress("0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE")
 )
 
+// generateRandomAddress generates a random Ethereum address
+func generateRandomAddress() (common.Address, error) {
+	var address common.Address
+	_, err := rand.Read(address[:])
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to generate random address: %v", err)
+	}
+	return address, nil
+}
+
+// generateRandomAddresses generates n random Ethereum addresses
+func generateRandomAddresses(n int) []common.Address {
+	addresses := make([]common.Address, n)
+	for i := 0; i < n; i++ {
+		address, err := generateRandomAddress()
+		if err != nil {
+			panic(err)
+		}
+		addresses[i] = address
+	}
+	return addresses
+}
+
+func startCPUProfiling(path string, b *testing.B) {
+}
+
+func BenchmarkStateDBHA(b *testing.B) {
+	db := rawdb.NewMemoryDatabase()
+	tdb := NewDatabaseWithConfig(db, &trie.Config{Preimages: true})
+	sdb, err := New(types.EmptyRootHash, tdb, nil)
+	if err != nil {
+		panic(err)
+	}
+	sdb.CreateAccount(testAddress)
+	sdb.SetNonce(testAddress, 2)
+	sdb.IntermediateRoot(true)
+	// Create a file to store the CPU profile
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sdb.stateObjects = make(map[common.Address]*stateObject)
+		sdb.GetNonce(testAddress)
+	}
+}
+
+func BenchmarkParallelStateDBHA(b *testing.B) {
+	db := rawdb.NewMemoryDatabase()
+	tdb := NewDatabaseWithConfig(db, &trie.Config{Preimages: true})
+	sdb, err := New(types.EmptyRootHash, tdb, nil)
+	sdb.parallelDBManager = NewParallelDBManager(10000, NewEmptySlotDB)
+	if err != nil {
+		panic(err)
+	}
+	unconfirmDB := sync.Map{}
+	pdb := NewSlotDB(sdb, 0, 0, &unconfirmDB, false)
+
+	// init an accout into trie
+	sdb.CreateAccount(testAddress)
+	sdb.SetNonce(testAddress, 2)
+	sdb.IntermediateRoot(true)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sdb.stateObjects = make(map[common.Address]*stateObject)
+		pdb.parallel.dirtiedStateObjectsInSlot = make(map[common.Address]*stateObject)
+		pdb.parallel.nonceChangesInSlot = make(map[common.Address]struct{})
+		pdb.parallel.nonceReadsInSlot = make(map[common.Address]uint64)
+		pdb.GetNonce(testAddress)
+	}
+}
+
+type set []int
+
+func (s set) get(i int) int {
+	return s[i]
+}
+
 // Tests that updating a state trie does not leak any database writes prior to
 // actually committing the state.
 func TestUpdateLeaks(t *testing.T) {

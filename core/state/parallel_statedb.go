@@ -1335,7 +1335,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 					log.Debug("IsSlotDBReadsValid nonce read is invalid in unconfirmed", "addr", addr,
 						"nonceSlot", nonceSlot, "nonceUnconfirm", nonceUnconfirm, "SlotIndex", slotDB.parallel.SlotIndex,
 						"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex)
-					return fmt.Errorf("nonce read is invalid in unconfirmed", "addr", addr, "nonceSlot", nonceSlot, "nonceUnconfirm", nonceUnconfirm)
+					return fmt.Errorf("nonce read is invalid in unconfirmed, addr=%s, nonceSlot=%d, nonceUnconfirm=%d", addr, nonceSlot, nonceUnconfirm)
 				}
 			}
 		}
@@ -1350,7 +1350,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 				"mainIndex", mainDB.txIndex)
 
-			return fmt.Errorf("nonce read is invalid", "addr", addr, "nonceSlot", nonceSlot, "nonceMain", nonceMain)
+			return fmt.Errorf("nonce read is invalid, addr=%s, nonceSlot=%d, nonceMain=%d", addr, nonceSlot, nonceMain)
 		}
 	}
 	// balance
@@ -1364,7 +1364,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 				if balanceSlot.Cmp(balanceUnconfirm) == 0 {
 					continue
 				}
-				return fmt.Errorf("balance read is invalid in unconfirmed", "addr", addr, "balanceSlot", balanceSlot.Uint64(), "balanceUnconfirm", balanceUnconfirm.Uint64())
+				return fmt.Errorf("balance read is invalid in unconfirmed, addr=%s, balanceSlot=%d, balanceUnconfirm=%d", addr, balanceSlot.Uint64(), balanceUnconfirm.Uint64())
 			}
 		}
 
@@ -1379,7 +1379,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 				"balanceSlot", balanceSlot, "balanceMain", balanceMain, "SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 				"mainIndex", mainDB.txIndex)
-			return fmt.Errorf("balance read is invalid", "addr", addr, "balanceSlot", balanceSlot, "balanceMain", balanceMain)
+			return fmt.Errorf("balance read is invalid, addr=%s, balanceSlot=%d, balanceMain=%d", addr, balanceSlot, balanceMain)
 		}
 	}
 	// check KV
@@ -1470,7 +1470,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 				"len codeSlot", len(codeSlot), "len codeMain", len(codeMain), "SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex,
 				"mainIndex", mainDB.txIndex)
-			return fmt.Errorf("code read is invalid", "addr", addr, "len codeSlot", len(codeSlot), "len codeMain", len(codeMain))
+			return fmt.Errorf("code read is invalid, addr=%s, codeSlotLen=%d, codeMain=%d", addr, len(codeSlot), len(codeMain))
 		}
 	}
 	// check codeHash
@@ -1484,7 +1484,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 			log.Debug("IsSlotDBReadsValid codehash read is invalid", "addr", addr,
 				"codeHashSlot", codeHashSlot, "codeHashMain", codeHashMain, "SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex, "mainIndex", mainDB.txIndex)
-			return fmt.Errorf("codehash read is invalid", "addr", addr, "codeHashSlot", codeHashSlot, "codeHashMain", codeHashMain)
+			return fmt.Errorf("codehash read is invalid, addr=%s, codeHashslot=%d, codehashmain=%d", addr, codeHashSlot, codeHashMain)
 		}
 	}
 	// addr state check
@@ -1498,7 +1498,7 @@ func (slotDB *ParallelStateDB) IsParallelReadsValid(isStage2 bool) error {
 				"addr", addr, "stateSlot", stateSlot, "stateMain", stateMain,
 				"SlotIndex", slotDB.parallel.SlotIndex,
 				"txIndex", slotDB.txIndex, "baseTxIndex", slotDB.parallel.baseTxIndex, "mainIndex", mainDB.txIndex)
-			return fmt.Errorf("addrState read invalid", "addr", addr, "stateSlot", stateSlot, "stateMain", stateMain)
+			return fmt.Errorf("addrState read invalid, addr=%s, stateSlot=%t, statemain=%t", addr, stateSlot, stateMain)
 		}
 	}
 	// snapshot destructs check
