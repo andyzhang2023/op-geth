@@ -24,12 +24,23 @@ func TestUncommitedDBCreateAccount(t *testing.T) {
 		{
 			{"Create", Address1},
 			{"AddBalance", Address1, big.NewInt(100)},
+			{"SetNonce", Address1, 2},
 		},
 	}
 	check := CheckState{
+		BeforeMerge: uncommitedState{
+			Uncommited: []Check{
+				{"balance", Address1, big.NewInt(100)},
+				{"nonce", Address1, 2},
+			},
+			Maindb: []Check{
+				{"balance", Address1, big.NewInt(0)},
+				{"nonce", Address1, 0},
+			},
+		},
 		AfterMerge: []Check{
 			{"balance", Address1, big.NewInt(100)},
-			{"nonce", Address1, 1},
+			{"nonce", Address1, 2},
 		},
 	}
 	if err := runCase(txs, newStateDB(), newUncommittedDB(newStateDB()), check); err != nil {
@@ -42,6 +53,7 @@ func TestUncommitedDBCreateAccount(t *testing.T) {
 		{
 			{"Create", Address1},
 			{"AddBalance", Address1, big.NewInt(200)},
+			{"SetNonce", Address1, 2},
 		},
 		// create a new account, should have a balance of 100, and nonce = 0
 		{
@@ -901,21 +913,74 @@ type CheckState struct {
 type Check []interface{}
 
 func (c Check) Verify(state vm.StateDB) error {
-	return nil
+	switch c[0].(string) {
+	case "balance":
+		addr := c[1].(common.Address)
+		balance := c[2].(*big.Int)
+		if state.GetBalance(addr).Cmp(balance) == 0 {
+			return nil
+		} else {
+			return fmt.Errorf("balance mismatch, expected:%d, actual:%d", balance.Uint64(), state.GetBalance(addr).Uint64())
+		}
+
+	case "nonce":
+		addr := c[1].(common.Address)
+		nonce := uint64(c[2].(int))
+		if state.GetNonce(addr) == nonce {
+			return nil
+		} else {
+			return fmt.Errorf("nonce mismatch, expected:%d, actual:%d", nonce, state.GetNonce(addr))
+		}
+
+	default:
+		panic(fmt.Sprintf("unknown check type: %s", c[0].(string)))
+
+	}
 }
 
 type Op []interface{}
 
 type Tx []Op
 
+func (op Op) Call(db vm.StateDB) error {
+	switch op[0].(string) {
+	case "Create":
+		addr := op[1].(common.Address)
+		db.CreateAccount(addr)
+		return nil
+	case "AddBalance":
+		addr := op[1].(common.Address)
+		balance := op[2].(*big.Int)
+		db.AddBalance(addr, balance)
+		return nil
+	case "SetNonce":
+		addr := op[1].(common.Address)
+		nonce := uint64(op[2].(int))
+		db.SetNonce(addr, nonce)
+		return nil
+	default:
+		return fmt.Errorf("unknown op type: %s", op[0].(string))
+	}
+}
+
 // Call executes the transaction.
 func (tx Tx) Call(db vm.StateDB) error {
+	for _, op := range tx {
+		if err := op.Call(db); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 type Txs []Tx
 
 func (txs Txs) Call(db vm.StateDB) error {
+	for _, tx := range txs {
+		if err := tx.Call(db); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -960,16 +1025,12 @@ func newUncommittedDB(db *StateDB) *UncommittedDB {
 	return NewUncommittedDB(db)
 }
 
-func exampleRun(t *testing.T) {
-}
-
 func runTxsOnStateDB(txs Txs, db *StateDB) (common.Hash, error) {
 	// run the transactions
 	if err := txs.Call(db); err != nil {
 		return common.Hash{}, fmt.Errorf("state failed to run txs: %v", err)
 	}
-	db.Finalise(true)
-	return db.trie.Hash(), nil
+	return db.IntermediateRoot(true), nil
 }
 
 func runTxOnUncommittedDB(txs Txs, db *UncommittedDB, check CheckState) (common.Hash, error) {
@@ -990,8 +1051,7 @@ func runTxOnUncommittedDB(txs Txs, db *UncommittedDB, check CheckState) (common.
 	if err := db.Merge(); err != nil {
 		return common.Hash{}, fmt.Errorf("failed to merge: %v", err)
 	}
-	db.maindb.Finalise(true)
-	return db.maindb.trie.Hash(), nil
+	return db.maindb.IntermediateRoot(true), nil
 }
 
 func runConflictCase(prepare, txs1, txs2 Txs, checks []Check) error {

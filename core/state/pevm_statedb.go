@@ -60,6 +60,8 @@ func NewUncommittedDB(maindb *StateDB) *UncommittedDB {
 		transientStorage: newTransientStorage(),
 		preimages:        make(map[common.Hash][]byte),
 		maindb:           maindb,
+		reads:            make(reads),
+		cache:            make(writes),
 	}
 }
 
@@ -422,7 +424,7 @@ func (pst *UncommittedDB) Merge() error {
 		}
 	}
 	// 3. merge logs writes
-	for _, st := range pst.reads {
+	for _, st := range pst.cache {
 		st.merge(pst.maindb)
 	}
 	// 4. merge object states
