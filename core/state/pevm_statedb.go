@@ -23,7 +23,7 @@ import (
 // | transientStorage | transaction |  no   |  no   |
 // | objects          | block   |  yes  |  yes  |
 // | refund           | block   |  yes  |  yes  |
-// | preimages        | block   |  no   |  no   |
+// | preimages        | block   |  yes   |  yes   |
 // |------------------|---------|-------|-------|
 type UncommittedDB struct {
 	isBerlin  bool
@@ -49,7 +49,8 @@ type UncommittedDB struct {
 	refund     uint64
 
 	// in the maindb, preimages survives in the scope of block
-	preimages map[common.Hash][]byte
+	preimages      map[common.Hash][]byte
+	preimagesReads map[common.Hash][]byte
 
 	maindb *StateDB
 }
@@ -59,6 +60,7 @@ func NewUncommittedDB(maindb *StateDB) *UncommittedDB {
 		accessList:       newAccessList(),
 		transientStorage: newTransientStorage(),
 		preimages:        make(map[common.Hash][]byte),
+		preimagesReads:   make(map[common.Hash][]byte),
 		maindb:           maindb,
 		reads:            make(reads),
 		cache:            make(writes),
@@ -100,6 +102,7 @@ func (pst *UncommittedDB) Prepare(rules params.Rules, sender, coinbase common.Ad
 	// do nothing, because the work had been done in constructer NewUncommittedDB()
 	// 0. init accessList
 	// 1. init transientStorage
+	pst.isBerlin = rules.IsBerlin
 	if rules.IsBerlin {
 		// Clear out any leftover from previous executions
 		al := newAccessList()
@@ -122,6 +125,8 @@ func (pst *UncommittedDB) Prepare(rules params.Rules, sender, coinbase common.Ad
 		if rules.IsShanghai { // EIP-3651: warm coinbase
 			al.AddAddress(coinbase)
 		}
+	} else {
+		pst.accessList = pst.maindb.accessList.Copy()
 	}
 	// Reset transient storage at the beginning of transaction execution
 	pst.transientStorage = newTransientStorage()
@@ -326,17 +331,32 @@ func (pst *UncommittedDB) AddLog(log *types.Log) {
 	log.TxHash = pst.txHash
 	log.TxIndex = uint(pst.txIndex)
 	// we don't need to set Index now, because it will be recalculated when merging into maindb
-	log.Index = 0
+	log.Index = uint(len(pst.logs))
 	pst.logs = append(pst.logs, log)
 }
 
 // ===============================================
 // Preimage Methods (EIP-1352: https://eips.ethereum.org/EIPS/eip-1352)
 func (pst *UncommittedDB) AddPreimage(hash common.Hash, preimage []byte) {
+	pst.recordPreimageOnce(hash)
 	if _, ok := pst.preimages[hash]; !ok {
 		pi := make([]byte, len(preimage))
 		copy(pi, preimage)
 		pst.preimages[hash] = pi
+	}
+}
+
+func (pst *UncommittedDB) recordPreimageOnce(hash common.Hash) {
+	if _, ok := pst.preimages[hash]; ok {
+		return
+	}
+	// get and record the preimage state from the maindb
+	preimageFromMaindb, ok := pst.maindb.preimages[hash]
+	if ok {
+		pst.preimagesReads[hash] = preimageFromMaindb
+	} else {
+		// not exists in the maindb too
+		pst.preimagesReads[hash] = nil
 	}
 }
 
@@ -354,6 +374,9 @@ func (pst *UncommittedDB) conflictsToMaindb() error {
 		return err
 	}
 	if err := pst.hasRefundConflict(pst.maindb); err != nil {
+		return err
+	}
+	if err := pst.hasPreimageConflict(pst.maindb); err != nil {
 		return err
 	}
 	return pst.reads.conflictsTo(pst.maindb)
@@ -382,6 +405,16 @@ func (pst *UncommittedDB) hasLogConflict(maindb *StateDB) error {
 	}
 }
 
+func (pst *UncommittedDB) hasPreimageConflict(maindb *StateDB) error {
+	for hash, preimage := range pst.preimagesReads {
+		mainstate := maindb.preimages[hash]
+		if !bytes.Equal(preimage, mainstate) {
+			return fmt.Errorf("conflict preimage, hash:%s, expected:%s, actual:%s", hash.String(), preimage, mainstate)
+		}
+	}
+	return nil
+}
+
 func (pst *UncommittedDB) hasRefundConflict(maindb *StateDB) error {
 	// never read
 	if pst.prevRefund == nil {
@@ -406,6 +439,9 @@ func (pst *UncommittedDB) Merge() error {
 	if err := pst.conflictsToMaindb(); err != nil {
 		return err
 	}
+
+	// 0. set the TxContext
+	pst.maindb.SetTxContext(pst.txHash, pst.txIndex)
 	// 1. merge preimages writes
 	for hash, preimage := range pst.preimages {
 		pst.maindb.preimages[hash] = preimage
@@ -413,15 +449,18 @@ func (pst *UncommittedDB) Merge() error {
 	// 2. merge accesslist writes
 	// we need to merge accessList before Berlin hardfork
 	if !pst.isBerlin {
-		for addr, _ := range pst.accessList.addresses {
+		for addr, slot := range pst.accessList.addresses {
 			pst.maindb.accessList.AddAddress(addr)
-		}
-		for _, slots := range pst.accessList.slots {
-			for slot, _ := range slots {
-				//@TODO need to do more merge work
-				_ = slot
+			if slot >= 0 {
+				slots := pst.accessList.slots[slot]
+				for hash := range slots {
+					pst.maindb.accessList.AddSlot(addr, hash)
+				}
 			}
 		}
+	} else {
+		// after Berlin hardfork, all the accessList should be reset before a transaction was executed
+		pst.maindb.accessList = pst.accessList
 	}
 	// 3. merge logs writes
 	for _, st := range pst.cache {
@@ -432,7 +471,9 @@ func (pst *UncommittedDB) Merge() error {
 		pst.maindb.AddLog(log)
 	}
 	// 5. merge refund
-	pst.maindb.refund += pst.refund
+	if pst.refund != 0 {
+		pst.maindb.AddRefund(pst.refund)
+	}
 	return nil
 }
 
@@ -458,14 +499,14 @@ func (pst *UncommittedDB) diffPreimages(maindb *StateDB) {
 //  1. the uncommittedDB's cache is not thread safe
 //  2. the maindb's cache is thread safe
 func (pst *UncommittedDB) getDeletedObject(addr common.Address, maindb *StateDB) (o *state) {
-	defer func() {
-		pst.reads.recordOnce(addr, o)
-	}()
 	if pst.cache[addr] != nil {
 		return pst.cache[addr]
 	}
 	// it reads the cache from the maindb
 	obj := maindb.getDeletedStateObject(addr)
+	defer func() {
+		pst.reads.recordOnce(addr, copyObj(obj))
+	}()
 	if obj == nil {
 		// the object is not found, do a read record
 		return nil
@@ -508,10 +549,9 @@ func (pst *UncommittedDB) getOrNewObject(addr common.Address) *state {
 // getCode returns the code for the given address or nil if not found.
 // 1. it first gets from the cache.
 // 2. if not found, then get from the maindb, and then record it in the cache.
-func (pst *UncommittedDB) getObjectWithCode(addr common.Address) *state {
+func (pst *UncommittedDB) getObjectWithCode(addr common.Address) (st *state) {
 	var code []byte
 	var codeHash = types.EmptyCodeHash
-	var state *state = nil
 	defer func() {
 		// update the reads record
 		pst.reads.recordCodeOnce(addr, codeHash, code)
@@ -519,7 +559,10 @@ func (pst *UncommittedDB) getObjectWithCode(addr common.Address) *state {
 
 	// the account's code found in the cache, return it, and no need to record the reads again
 	obj := pst.getObject(addr)
-	if obj != nil && obj.codeIsLoaded() {
+	if obj == nil {
+		return nil
+	}
+	if obj.codeIsLoaded() {
 		return obj
 	}
 	// now we known the code is not updated into cache, we need to update it after getting it from maindb
@@ -528,17 +571,16 @@ func (pst *UncommittedDB) getObjectWithCode(addr common.Address) *state {
 	if mainobj == nil {
 		return nil
 	}
-	defer func() {
-		// the mainobj != nil, so there must be a cache object for the addr, stored by the method pst.getObject()
-		pst.cache[addr].code = code
-		pst.cache[addr].codeHash = codeHash[:]
-		pst.cache[addr].codeSize = len(code)
-	}()
-	code = mainobj.Code()
 	// need to copy the balance, nonce and other common fields, if this is the first time to touch this object.
-	state = copyObj(mainobj)
+	if pst.cache[addr] == nil {
+		pst.cache[addr] = copyObj(mainobj)
+	}
+	code = mainobj.Code()
 	codeHash = crypto.Keccak256Hash(code)
-	return state
+	pst.cache[addr].code = code
+	pst.cache[addr].codeHash = codeHash[:]
+	pst.cache[addr].codeSize = len(code)
+	return pst.cache[addr]
 }
 
 type state struct {
@@ -605,8 +647,9 @@ func (s state) merge(maindb *StateDB) {
 	// 2. merge the nonce
 	// 3. merge the code
 	// 4. merge the state
-	if s.modified|ModifySelfDestruct != 0 {
+	if s.modified&ModifySelfDestruct != 0 {
 		maindb.SelfDestruct(s.addr)
+		return
 	}
 	obj := maindb.GetOrNewStateObject(s.addr)
 	if s.modified&ModifyBalance != 0 {
@@ -635,15 +678,20 @@ func (s *state) codeIsLoaded() bool {
 }
 
 func copyObj(obj *stateObject) *state {
+	if obj == nil {
+		return nil
+	}
 	// we don't copy the fields of `code` and `state` here, because they are lazy loaded.
 	// we don't copy the `created` eigher, because it true only when the object is nil, which means "it was created newly by the uncommited db".
 	// we need to copy the fields `deleted`, because it identifies whether the object is deleted or not.
 	return &state{
+		addr:         obj.Address(),
 		nonce:        obj.Nonce(),
 		balance:      new(big.Int).Set(obj.Balance()),
 		selfDestruct: obj.selfDestructed,
 		deleted:      obj.deleted, // deleted is true when a "selfDestruct=true" object is finalized. more details can be found in the method Finalize() of StateDB
 		codeSize:     -1,          // mark the code "unloaded"
+		state:        make(map[common.Hash]common.Hash),
 	}
 }
 
@@ -735,8 +783,11 @@ func (wst writes) create(addr common.Address) *state {
 		//need to init code & codeHash
 		code:     nil,
 		codeHash: types.EmptyCodeHash.Bytes(),
+		// mark the code "unloaded"?
+		//codeSize: -1,
 		//need to reset storage
-		state: make(map[common.Hash]common.Hash),
+		state:   make(map[common.Hash]common.Hash),
+		created: true,
 	}
 	wst[addr].markAllModified()
 	return wst[addr]
@@ -748,6 +799,8 @@ func (wst writes) selfDestruct(addr common.Address) {
 		return
 	}
 	obj.modified |= ModifySelfDestruct
+	obj.selfDestruct = true
+	obj.balance = big.NewInt(0)
 }
 
 func (wst writes) merge(maindb *StateDB) {
