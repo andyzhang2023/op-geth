@@ -332,7 +332,7 @@ func (pst *UncommittedDB) AddSlotToAccessList(addr common.Address, slot common.H
 // Snapshot Methods
 // (is it necessary to do snapshot and revert ?)
 func (pst *UncommittedDB) RevertToSnapshot(id int) {
-	// just simply mark this db discarded
+	//clear all the writes
 	pst.discarded = true
 }
 func (pst *UncommittedDB) Snapshot() int {
@@ -671,7 +671,7 @@ func (s state) merge(maindb *StateDB) {
 		maindb.SelfDestruct(s.addr)
 		return
 	}
-	obj := maindb.getDeletedStateObject(s.addr)
+	obj := maindb.GetOrNewStateObject(s.addr)
 	if s.modified&ModifyBalance != 0 {
 		obj.SetBalance(s.balance)
 	}
