@@ -640,6 +640,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		txReq := &ParallelTxRequest{
 			txIndex: i,
 			tx:      tx,
+			block:   block,
 		}
 		p.allTxReqs = append(p.allTxReqs, txReq)
 		allTxsReq[i] = txReq

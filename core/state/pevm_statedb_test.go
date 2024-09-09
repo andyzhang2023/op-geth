@@ -849,6 +849,47 @@ func TestPevmLogs(t *testing.T) {
 	if err := runCase(txs, state, unstate, check); err != nil {
 		t.Fatalf("ut failed, err=%s", err.Error())
 	}
+
+	// test the maindb with txIndex=-1
+	txs = Txs{
+		{
+			{"AddLog", &types.Log{Data: []byte("hello")}},
+			{"AddLog", &types.Log{Data: []byte("world")}},
+		},
+	}
+	thash = common.BytesToHash([]byte("00000000000000000tx2"))
+	check = CheckState{
+		BeforeRun: uncommitedState{
+			Uncommited: []Check{
+				{"loglen", 0},
+			},
+			Maindb: []Check{
+				{"loglen", 0},
+			},
+		},
+		BeforeMerge: uncommitedState{
+			Uncommited: []Check{
+				{"loglen", 2},
+				{"log", thash, 0, []byte("hello"), 0, 0}, // i,  Data, TxIndex, Index
+				{"log", thash, 1, []byte("world"), 0, 1},
+			},
+			Maindb: []Check{
+				{"loglen", 0},
+			},
+		},
+		AfterMerge: []Check{
+			{"loglen", 2},
+			{"log", thash, 0, []byte("hello"), 0, 0},
+			{"log", thash, 1, []byte("world"), 0, 1},
+		},
+	}
+	state = newStateDB()
+	unstate = newUncommittedDB(newStateDB())
+	unstate.SetTxContext(thash, 0)
+	if err := runCase(txs, state, unstate, check); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+
 }
 
 func TestPevmAccessList(t *testing.T) {

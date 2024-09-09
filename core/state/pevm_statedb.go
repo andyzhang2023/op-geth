@@ -410,23 +410,19 @@ func (pst *UncommittedDB) hasLogConflict(maindb *StateDB) error {
 	if pst.txIndex == 0 {
 		// this is the first transaction in the block,
 		// so the logs should be empty
+		// and the maindb.txIndex should be -1
 		if maindb.logSize != 0 {
 			return fmt.Errorf("conflict logs, logSize: %d, expected 0", maindb.logSize)
 		}
 		if len(maindb.logs) != 0 {
 			return fmt.Errorf("conflict logs, logsLen: %d, expected 0", len(maindb.logs))
 		}
-		if maindb.txIndex != 0 {
-			return fmt.Errorf("conflict logs, txIndex: %d, expected 0", maindb.txIndex)
-		}
-		return nil
-	} else {
-		// this is not the first transaction in the block
-		if maindb.txIndex != int(pst.txIndex)-1 {
-			return fmt.Errorf("conflict logs, txIndex: %d, expected %d", maindb.txIndex, pst.txIndex)
-		}
-		return nil
 	}
+	// this is not the first transaction in the block
+	if maindb.txIndex != int(pst.txIndex)-1 {
+		return fmt.Errorf("conflict logs, txIndex: %d, expected %d", maindb.txIndex, pst.txIndex)
+	}
+	return nil
 }
 
 func (pst *UncommittedDB) hasPreimageConflict(maindb *StateDB) error {

@@ -121,7 +121,7 @@ func BenchmarkAkaka(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Import the chain as an archive node for the comparison baseline
 		archiveDb := rawdb.NewMemoryDatabase()
-		archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil)
+		archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{EnableParallelExec: true}, nil, nil)
 		if n, err := archive.InsertChain(blocks); err != nil {
 			panic(fmt.Sprintf("failed to process block %d: %v", n, err))
 		}
