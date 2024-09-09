@@ -332,8 +332,7 @@ func (pst *UncommittedDB) AddSlotToAccessList(addr common.Address, slot common.H
 // Snapshot Methods
 // (is it necessary to do snapshot and revert ?)
 func (pst *UncommittedDB) RevertToSnapshot(id int) {
-	//clear all the writes
-	pst.discarded = true
+	pst.cache = make(writes)
 }
 func (pst *UncommittedDB) Snapshot() int {
 	return 1
@@ -827,4 +826,80 @@ func (wst writes) merge(maindb *StateDB) {
 	for _, st := range wst {
 		st.merge(maindb)
 	}
+}
+
+type jBalance struct {
+	created bool // whether the object is newly created in the uncommitted db
+	addr    common.Address
+	balance *big.Int
+}
+
+type jNonce struct {
+	created bool
+	addr    common.Address
+	nonce   uint64
+}
+
+type jStorage struct {
+	created    bool
+	addr       common.Address
+	keyCreated bool // whether the key is newly created in the object
+	key, val   common.Hash
+}
+
+type jCode struct {
+	created bool
+	addr    common.Address
+	code    []byte
+}
+
+type jSelfDestruct struct {
+	addr common.Address
+	obj  *state
+}
+
+type jRefund struct {
+	prev uint64
+}
+
+type jPreimage struct {
+	created bool
+	hash    common.Hash
+	value   []byte
+}
+
+type jAccessList struct {
+	created bool
+	addr    common.Address
+	slot    common.Hash
+}
+
+type jLog struct {
+}
+
+type jTransientStorage struct {
+}
+
+type ujournal []ustate
+
+func (j *ujournal) append(st ustate) {
+	*j = append(*j, st)
+}
+
+func (j *ujournal) revertTo(db *UncommittedDB, snapshot int) {
+	if snapshot < 0 || snapshot >= len(*j) {
+		return // invalid snapshot index
+	}
+	for i := len(*j) - 1; i > snapshot; i-- {
+		(*j)[i].revert(db)
+	}
+	*j = (*j)[:snapshot]
+}
+
+func (j *ujournal) snapshot() int {
+	return len(*j) - 1
+}
+
+type ustate interface {
+	revert(db *UncommittedDB)
 }
