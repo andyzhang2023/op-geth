@@ -1953,7 +1953,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 				threshold = 0
 				if txsCount >= threshold {
 					bc.UseParallelProcessor()
-					statedb.CreateParallelDBManager(2 * txsCount)
+					//statedb.CreateParallelDBManager(2 * txsCount)
 					log.Debug("Enable Parallel Tx execution", "block", block.NumberU64(), "transactions", txsCount, "parallelTxNum", bc.vmConfig.ParallelTxNum)
 				} else {
 					bc.UseSerialProcessor()

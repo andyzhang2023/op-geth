@@ -122,7 +122,7 @@ func BenchmarkAkaka(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		archiveDb := rawdb.NewMemoryDatabase()
 		// Import the chain as an archive node for the comparison baseline
-		archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{EnableParallelExec: true}, nil, nil)
+		archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{EnableParallelExec: false}, nil, nil)
 		if n, err := archive.InsertChain(blocks); err != nil {
 			panic(fmt.Sprintf("failed to process block %d: %v", n, err))
 		}
@@ -130,17 +130,26 @@ func BenchmarkAkaka(b *testing.B) {
 	}
 }
 
-func BenchmarkSeqAndParallelRead(b *testing.B) {
+var cacheLock = sync.RWMutex{}
+var cached = make(map[common.Address]uint64)
+
+func getAddressSafe(addr common.Address) uint64 {
+	cacheLock.Lock()
+	defer cacheLock.Unlock()
+	return cached[addr]
+}
+
+func getAddress(addr common.Address) uint64 {
+	return cached[addr]
+}
+
+func BenchmarkSequencialRead(b *testing.B) {
 	// generate a set of addresses
 	// case 1: read the state sequentially
 	// case 2: read them in parallel
 	address := generateAddress(10000)
-	cached := make(map[common.Address]uint64)
 	for i := 0; i < len(address); i++ {
 		cached[address[i].addr] = uint64(i)
-	}
-	getAddress := func(addr common.Address) uint64 {
-		return cached[addr]
 	}
 
 	b.ResetTimer()
@@ -157,15 +166,8 @@ func BenchmarkParallelRead(b *testing.B) {
 	// case 1: read the state sequentially
 	// case 2: read them in parallel
 	address := generateAddress(10000)
-	cacheLock := sync.RWMutex{}
-	cached := make(map[common.Address]uint64)
 	for i := 0; i < len(address); i++ {
 		cached[address[i].addr] = uint64(i)
-	}
-	getAddress := func(addr common.Address) uint64 {
-		cacheLock.RLock()
-		defer cacheLock.RUnlock()
-		return cached[addr]
 	}
 
 	proc := parallel(make(chan func()))
@@ -178,7 +180,7 @@ func BenchmarkParallelRead(b *testing.B) {
 		for i := 0; i < len(address); i++ {
 			index := i
 			proc.do(func() {
-				getAddress(address[index].addr)
+				getAddressSafe(address[index].addr)
 				wait.Done()
 			})
 		}
