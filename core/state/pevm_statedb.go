@@ -349,6 +349,16 @@ func (pst *UncommittedDB) AddLog(log *types.Log) {
 	pst.logs = append(pst.logs, log)
 }
 
+// PackLogs returns the logs matching the specified transaction hash, and annotates
+// them with the given blockNumber and blockHash.
+func (s *UncommittedDB) PackLogs(blockNumber uint64, blockHash common.Hash) []*types.Log {
+	for _, l := range s.logs {
+		l.BlockNumber = blockNumber
+		l.BlockHash = blockHash
+	}
+	return s.logs
+}
+
 // ===============================================
 // Preimage Methods (EIP-1352: https://eips.ethereum.org/EIPS/eip-1352)
 func (pst *UncommittedDB) AddPreimage(hash common.Hash, preimage []byte) {

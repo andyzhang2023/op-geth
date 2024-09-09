@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -86,6 +87,7 @@ type ParallelTxResult struct {
 	slotIndex     int
 	txReq         *ParallelTxRequest
 	receipt       *types.Receipt
+	uncommited    *state.UncommittedDB
 	slotDB        *state.ParallelStateDB
 	gpSlot        *GasPool
 	evm           *vm.EVM
@@ -103,7 +105,7 @@ type ParallelTxRequest struct {
 	msg             *Message
 	block           *types.Block
 	vmConfig        vm.Config
-	usedGas         *uint64
+	usedGas         uint64
 	curTxChan       chan int
 	runnable        int32 // 0: not runnable 1: runnable - can be scheduled
 	executedNum     atomic.Int32
@@ -287,63 +289,86 @@ func (p *ParallelStateProcessor) switchSlot(slotIndex int) {
 }
 
 // executeInSlot do tx execution with thread local slot.
-func (p *ParallelStateProcessor) executeInSlot(slotIndex int, txReq *ParallelTxRequest) *ParallelTxResult {
-	execNum := txReq.executedNum.Add(1)
-	slotDB := state.NewSlotDB(txReq.baseStateDB, txReq.txIndex, int(0), p.unconfirmedDBs, txReq.useDAG)
-	blockContext := NewEVMBlockContext(txReq.block.Header(), p.bc, nil, p.config, slotDB) // can share blockContext within a block for efficiency
-	txContext := NewEVMTxContext(txReq.msg)
-	vmenv := vm.NewEVM(blockContext, txContext, slotDB, p.config, txReq.vmConfig)
+func (p *ParallelStateProcessor) executeInSlot(blockContext vm.BlockContext, config *params.ChainConfig, cfg vm.Config, statedb *state.StateDB, txReq *ParallelTxRequest, gp *GasPool, blockNumber *big.Int, blockHash common.Hash) *ParallelTxResult {
+	msg := txReq.msg
+	tx := txReq.tx
+	// Create a new context to be used in the EVM environment.
+	txContext := NewEVMTxContext(msg)
+	// init slotDB
+	slotDB := state.NewUncommittedDB(statedb)
+	slotDB.SetTxContext(tx.Hash(), txReq.txIndex)
 
-	rules := p.config.Rules(txReq.block.Number(), blockContext.Random != nil, blockContext.Time)
-	slotDB.Prepare(rules, txReq.msg.From, vmenv.Context.Coinbase, txReq.msg.To, vm.ActivePrecompiles(rules), txReq.msg.AccessList)
+	evm := vm.NewEVM(blockContext, txContext, statedb, config, cfg)
+	evm.Reset(txContext, slotDB)
 
-	// gasLimit not accurate, but it is ok for block import.
-	// each slot would use its own gas pool, and will do gas limit check later
-	gpSlot := new(GasPool).AddGas(txReq.gasLimit) // block.GasLimit()
-
-	on := txReq.tx.Nonce()
-	if txReq.msg.IsDepositTx && p.config.IsOptimismRegolith(vmenv.Context.Time) {
-		on = slotDB.GetNonce(txReq.msg.From)
+	nonce := tx.Nonce()
+	if msg.IsDepositTx && config.IsOptimismRegolith(evm.Context.Time) {
+		nonce = slotDB.GetNonce(msg.From)
 	}
 
-	slotDB.SetTxContext(txReq.tx.Hash(), txReq.txIndex)
-
-	evm, result, err := applyTransactionStageExecution(txReq.msg, gpSlot, slotDB, vmenv, p.delayGasFee)
-	txResult := ParallelTxResult{
-		executedIndex: execNum,
-		slotIndex:     slotIndex,
-		txReq:         txReq,
-		receipt:       nil,
-		slotDB:        slotDB,
-		err:           err,
-		gpSlot:        gpSlot,
-		evm:           evm,
-		result:        result,
-		originalNonce: &on,
+	// Apply the transaction to the current state (included in the env).
+	result, err := ApplyMessage(evm, msg, gp)
+	if err != nil {
+		return &ParallelTxResult{
+			txReq: txReq,
+			err:   err,
+		}
 	}
 
-	if err == nil {
-		p.unconfirmedDBs.Store(txReq.txIndex, slotDB)
+	// Update the state with pending changes.
+	var root []byte
+	// we don't finalize the stateDB here, we will do it after all txs are executed
+	//if config.IsByzantium(blockNumber) {
+	//	statedb.Finalise(true)
+	//} else {
+	//	root = statedb.IntermediateRoot(config.IsEIP158(blockNumber)).Bytes()
+	//}
+
+	// Create a new receipt for the transaction, storing the intermediate root and gas used
+	// by the tx.
+	// @TODO calculate the CumulativeGasUsed in merging
+	receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: 0}
+	if result.Failed() {
+		receipt.Status = types.ReceiptStatusFailed
 	} else {
-		// the transaction failed at check(nonce or balance), actually it has not been executed yet.
-		// the error here can be either expected or unexpected.
-		// expected - the execution is correct and the error is normal result
-		// unexpected -  the execution is incorrectly accessed the state because of parallelization.
-		// In both case, rerun with next version of stateDB, it is a waste and buggy to rerun with same
-		// version of stateDB that has been marked conflict.
-		// Therefore, treat it as conflict and rerun, leave the result to conflict check.
-		// Load conflict as it maybe updated by conflict checker or other execution slots.
-		// use old mIndex so that we can try the new one that is updated by other thread of merging
-		// during execution.
-		atomic.CompareAndSwapInt32(&txReq.runnable, 0, 1)
-		// the error could be caused by unconfirmed balance reference,
-		// the balance could insufficient to pay its gas limit, which cause it preCheck.buyGas() failed
-		// redo could solve it.
-		log.Debug("In slot execution error", "error", err,
-			"slotIndex", slotIndex, "txIndex", txReq.txIndex)
+		receipt.Status = types.ReceiptStatusSuccessful
 	}
-	p.unconfirmedResults.Store(txReq.txIndex, &txResult)
-	return &txResult
+	receipt.TxHash = tx.Hash()
+	receipt.GasUsed = result.UsedGas
+
+	if msg.IsDepositTx && config.IsOptimismRegolith(evm.Context.Time) {
+		// The actual nonce for deposit transactions is only recorded from Regolith onwards and
+		// otherwise must be nil.
+		receipt.DepositNonce = &nonce
+		// The DepositReceiptVersion for deposit transactions is only recorded from Canyon onwards
+		// and otherwise must be nil.
+		if config.IsOptimismCanyon(evm.Context.Time) {
+			receipt.DepositReceiptVersion = new(uint64)
+			*receipt.DepositReceiptVersion = types.CanyonDepositReceiptVersion
+		}
+	}
+	if tx.Type() == types.BlobTxType {
+		receipt.BlobGasUsed = uint64(len(tx.BlobHashes()) * params.BlobTxBlobGasPerBlob)
+		receipt.BlobGasPrice = evm.Context.BlobBaseFee
+	}
+
+	// If the transaction created a contract, store the creation address in the receipt.
+	if msg.To == nil {
+		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, nonce)
+	}
+
+	// Set the receipt logs and create the bloom filter.
+	receipt.Logs = slotDB.PackLogs(blockNumber.Uint64(), blockHash)
+	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	receipt.BlockHash = blockHash
+	receipt.BlockNumber = blockNumber
+	receipt.TransactionIndex = uint(statedb.TxIndex())
+	return &ParallelTxResult{
+		txReq:      txReq,
+		err:        nil,
+		receipt:    receipt,
+		uncommited: slotDB,
+	}
 }
 
 // toConfirmTxIndex confirm a serial TxResults with same txIndex
@@ -464,183 +489,46 @@ func (p *ParallelStateProcessor) toConfirmTxIndexResult(txResult *ParallelTxResu
 	// ok, time to do finalize, stage2 should not be parallel
 	txResult.receipt, txResult.err = applyTransactionStageFinalization(txResult.evm, txResult.result,
 		*txReq.msg, p.config, txResult.slotDB, txReq.block,
-		txReq.tx, txReq.usedGas, txResult.originalNonce)
+		txReq.tx, &txReq.usedGas, txResult.originalNonce)
 	return true
 }
 
 func (p *ParallelStateProcessor) runSlotLoop(slotIndex int, slotType int32) {
-	curSlot := p.slotState[slotIndex]
-	var wakeupChan chan struct{}
-	var stopChan chan struct{}
-
-	if slotType == parallelPrimarySlot {
-		wakeupChan = curSlot.primaryWakeUpChan
-		stopChan = curSlot.primaryStopChan
-	} else {
-		wakeupChan = curSlot.shadowWakeUpChan
-		stopChan = curSlot.shadowStopChan
-	}
-	for {
-		select {
-		case <-stopChan:
-			p.stopSlotChan <- struct{}{}
-			continue
-		case <-wakeupChan:
-		}
-
-		interrupted := false
-		for _, txReq := range curSlot.pendingTxReqList {
-			if txReq.txIndex <= int(p.mergedTxIndex.Load()) {
-				continue
-			}
-
-			if atomic.LoadInt32(&curSlot.activatedType) != slotType {
-				interrupted = true
-				break
-			}
-			if !atomic.CompareAndSwapInt32(&txReq.runnable, 1, 0) {
-				continue
-			}
-			res := p.executeInSlot(slotIndex, txReq)
-			if res == nil {
-				continue
-			}
-			p.txResultChan <- res
-		}
-		// switched to the other slot.
-		if interrupted {
-			continue
-		}
-
-		// txReq in this Slot have all been executed, try steal one from other slot.
-		// as long as the TxReq is runnable, we steal it, mark it as stolen
-		for _, stealTxReq := range p.allTxReqs {
-			if stealTxReq.txIndex <= int(p.mergedTxIndex.Load()) {
-				continue
-			}
-			if atomic.LoadInt32(&curSlot.activatedType) != slotType {
-				interrupted = true
-				break
-			}
-
-			if !atomic.CompareAndSwapInt32(&stealTxReq.runnable, 1, 0) {
-				continue
-			}
-			res := p.executeInSlot(slotIndex, stealTxReq)
-			if res == nil {
-				continue
-			}
-			p.txResultChan <- res
-		}
-	}
 }
 
 func (p *ParallelStateProcessor) runQuickMergeSlotLoop(slotIndex int, slotType int32) {
-	curSlot := p.slotState[slotIndex]
-	var wakeupChan chan struct{}
-	var stopChan chan struct{}
-
-	if slotType == parallelPrimarySlot {
-		wakeupChan = curSlot.primaryWakeUpChan
-		stopChan = curSlot.primaryStopChan
-	} else {
-		wakeupChan = curSlot.shadowWakeUpChan
-		stopChan = curSlot.shadowStopChan
-	}
-	for {
-		select {
-		case <-stopChan:
-			p.stopSlotChan <- struct{}{}
-			continue
-		case <-wakeupChan:
-		}
-
-		next := int(p.mergedTxIndex.Load()) + 1
-		for i := next; i < len(p.allTxReqs); i++ {
-			txReq := p.allTxReqs[next]
-			if txReq.txIndex <= int(p.mergedTxIndex.Load()) {
-				continue
-			}
-
-			if txReq.txIndex != next {
-				log.Warn("query next txReq wrong", "slot", slotIndex, "next", next, "actual", txReq.txIndex)
-				break
-			}
-			if !atomic.CompareAndSwapInt32(&txReq.runnable, 1, 0) {
-				continue
-			}
-			res := p.executeInSlot(slotIndex, txReq)
-			if res != nil {
-				p.txResultChan <- res
-			}
-			break
-		}
-	}
 }
 
 func (p *ParallelStateProcessor) runConfirmStage2Loop() {
-	for {
-		select {
-		case <-p.stopConfirmStage2Chan:
-			for len(p.confirmStage2Chan) > 0 {
-				<-p.confirmStage2Chan
-			}
-			p.stopSlotChan <- struct{}{}
-			continue
-		case <-p.confirmStage2Chan:
-			for len(p.confirmStage2Chan) > 0 {
-				<-p.confirmStage2Chan // drain the chan to get the latest merged txIndex
-			}
-		}
-		// stage 2,if all tx have been executed at least once, and its result has been received.
-		// in Stage 2, we will run check when merge is advanced.
-		// more aggressive tx result confirm, even for these Txs not in turn
-		startTxIndex := int(p.mergedTxIndex.Load()) + 2 // stage 2's will start from the next target merge index
-		endTxIndex := startTxIndex + stage2CheckNumber
-		txSize := len(p.allTxReqs)
-		if endTxIndex > (txSize - 1) {
-			endTxIndex = txSize - 1
-		}
-		log.Debug("runConfirmStage2Loop", "startTxIndex", startTxIndex, "endTxIndex", endTxIndex)
-		for txIndex := startTxIndex; txIndex < endTxIndex; txIndex++ {
-			p.toConfirmTxIndex(txIndex, true)
-		}
-		// make sure all slots are wake up
-		for i := 0; i < p.parallelNum; i++ {
-			p.switchSlot(i)
-		}
-	}
 }
 
 // wait until the next Tx is executed and its result is merged to the main stateDB
-func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, statedb *state.StateDB, gp *GasPool) *ParallelTxResult {
+func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, statedb *state.StateDB, gp *GasPool, gasUsed *uint64) *ParallelTxResult {
 	if result == nil {
 		return nil
 	}
 	if result.err != nil {
 		return result
 	}
-	if !p.toConfirmTxIndexResult(result, false) {
-		return result
-	}
-
-	// ok, the tx result is valid and can be merged
+	// we must check the gas limit before merge
 	if err := gp.SubGas(result.receipt.GasUsed); err != nil {
 		log.Error("gas limit reached", "block", result.txReq.block.Number(),
 			"txIndex", result.txReq.txIndex, "GasUsed", result.receipt.GasUsed, "gp.Gas", gp.Gas())
 	}
-
-	resultTxIndex := result.txReq.txIndex
+	// merge result into maindb
+	if err := result.uncommited.Merge(); err != nil {
+		result.err = err
+		return result
+	}
+	// calculate the gasUsed
+	*gasUsed = *gasUsed + result.receipt.GasUsed
+	result.receipt.CumulativeGasUsed = *gasUsed
 
 	var root []byte
 	header := result.txReq.block.Header()
 
 	isByzantium := p.config.IsByzantium(header.Number)
 	isEIP158 := p.config.IsEIP158(header.Number)
-	result.slotDB.FinaliseForParallel(isByzantium || isEIP158, statedb)
-
-	// merge slotDB into mainDB
-	statedb.MergeSlotDB(result.slotDB, result.receipt, resultTxIndex, result.result.delayFees)
 
 	delayGasFee := result.result.delayFees
 	// add delayed gas fee
@@ -662,37 +550,6 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	}
 	result.receipt.PostState = root
 
-	if resultTxIndex != int(p.mergedTxIndex.Load())+1 {
-		log.Error("ProcessParallel tx result out of order", "resultTxIndex", resultTxIndex,
-			"p.mergedTxIndex", p.mergedTxIndex.Load())
-	}
-	p.mergedTxIndex.Store(int32(resultTxIndex))
-
-	// trigger all slot to run left conflicted txs
-	for _, slot := range p.slotState {
-		var wakeupChan chan struct{}
-		if slot.activatedType == parallelPrimarySlot {
-			wakeupChan = slot.primaryWakeUpChan
-		} else {
-			wakeupChan = slot.shadowWakeUpChan
-		}
-		select {
-		case wakeupChan <- struct{}{}:
-		default:
-		}
-	}
-	// schedule prefetch once only when unconfirmedResult is valid
-	if result.err == nil {
-		if _, ok := p.txReqExecuteRecord[resultTxIndex]; !ok {
-			p.txReqExecuteRecord[resultTxIndex] = 0
-			p.txReqExecuteCount++
-			statedb.AddrPrefetch(result.slotDB)
-			if !p.inConfirmStage2 && p.txReqExecuteCount == p.targetStage2Count {
-				p.inConfirmStage2 = true
-			}
-		}
-		p.txReqExecuteRecord[resultTxIndex]++
-	}
 	return result
 }
 
@@ -775,61 +632,17 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	}
 
 	txNum, allTxsReq := len(allTxs), make([]*ParallelTxRequest, len(allTxs))
-	latestExcludedTx := -1
 	// Iterate over and process the individual transactions
 	commonTxs := make([]*types.Transaction, 0, txNum)
 	// var txReqs []*ParallelTxRequest
 	for i, tx := range allTxs {
-		// can be moved it into slot for efficiency, but signer is not concurrent safe
-		// Parallel Execution 1.0&2.0 is for full sync mode, Nonce PreCheck is not necessary
-		// And since we will do out-of-order execution, the Nonce PreCheck could fail.
-		// We will disable it and leave it to Parallel 3.0 which is for validator mode
-		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-		}
-
-		// find the latestDepTx from TxDAG or latestExcludedTx
-		latestDepTx := -1
-		if dep := types.TxDependency(txDAG, i); len(dep) > 0 {
-			latestDepTx = int(dep[len(dep)-1])
-		}
-		if latestDepTx < latestExcludedTx {
-			latestDepTx = latestExcludedTx
-		}
-
 		// parallel start, wrap an exec message, which will be dispatched to a slot
 		txReq := &ParallelTxRequest{
-			txIndex:         i,
-			baseStateDB:     statedb,
-			staticSlotIndex: -1,
-			tx:              tx,
-			gasLimit:        block.GasLimit(), // gp.Gas().
-			msg:             msg,
-			block:           block,
-			vmConfig:        cfg,
-			usedGas:         usedGas,
-			curTxChan:       make(chan int, 1),
-			runnable:        1, // 0: not runnable, 1: runnable
-			useDAG:          txDAG != nil,
-		}
-		txReq.executedNum.Store(0)
-		txReq.conflictIndex.Store(-2)
-		if latestDepTx >= 0 {
-			txReq.conflictIndex.Store(int32(latestDepTx))
+			txIndex: i,
+			tx:      tx,
 		}
 		p.allTxReqs = append(p.allTxReqs, txReq)
 		allTxsReq[i] = txReq
-		if txDAG != nil && txDAG.TxDep(i).CheckFlag(types.ExcludedTxFlag) {
-			latestExcludedTx = i
-		}
-	}
-	// set up stage2 enter criteria
-	p.targetStage2Count = len(p.allTxReqs)
-	if p.targetStage2Count > 50 {
-		// usually, the last Tx could be the bottleneck it could be very slow,
-		// so it is better for us to enter stage 2 a bit earlier
-		p.targetStage2Count = p.targetStage2Count - stage2AheadNum
 	}
 
 	p.delayGasFee = false
@@ -846,10 +659,32 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	txLevels := NewTxLevels(allTxsReq, runtimeDag)
 	starttime := time.Now()
 	var executeFailed, confirmedFailed int32 = 0, 0
+	var gasUsed uint64 = 0
 
 	// wait until all Txs have processed.
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
-		res := p.executeInSlot(0, ptr)
+		// can be moved it into slot for efficiency, but signer is not concurrent safe
+		// Parallel Execution 1.0&2.0 is for full sync mode, Nonce PreCheck is not necessary
+		// And since we will do out-of-order execution, the Nonce PreCheck could fail.
+		// We will disable it and leave it to Parallel 3.0 which is for validator mode
+		msg, err := TransactionToMessage(ptr.tx, signer, header.BaseFee)
+		if err != nil {
+			return &ParallelTxResult{
+				txReq: ptr,
+				err:   err,
+			}
+		}
+		ptr.msg = msg
+		var blockContext vm.BlockContext = blockContext
+		var config *params.ChainConfig = p.config
+		var cfg vm.Config = cfg
+		var statedb *state.StateDB = statedb
+		var txReq *ParallelTxRequest = ptr
+		//@TODO: testcase 1: tx1 consume too much gas, tx2 has not enough gas to execute
+		var gp *GasPool = new(GasPool).AddGas(gp.Gas())
+		var blockNumber *big.Int = block.Number()
+		var blockHash common.Hash
+		res := p.executeInSlot(blockContext, config, cfg, statedb, txReq, gp, blockNumber, blockHash)
 		if res.err != nil {
 			log.Debug("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
 			atomic.AddInt32(&executeFailed, 1)
@@ -858,7 +693,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		return res
 	},
 		func(ptr *ParallelTxResult) error {
-			result := p.confirmTxResults(ptr, statedb, gp)
+			result := p.confirmTxResults(ptr, statedb, gp, &gasUsed)
 			if result == nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
 				// it should never happen
