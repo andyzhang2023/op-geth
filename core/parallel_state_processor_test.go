@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -127,4 +128,61 @@ func BenchmarkAkaka(b *testing.B) {
 		}
 		archive.Stop()
 	}
+}
+
+func BenchmarkSeqAndParallelRead(b *testing.B) {
+	// generate a set of addresses
+	// case 1: read the state sequentially
+	// case 2: read them in parallel
+	address := generateAddress(10000)
+	cached := make(map[common.Address]uint64)
+	for i := 0; i < len(address); i++ {
+		cached[address[i].addr] = uint64(i)
+	}
+	getAddress := func(addr common.Address) uint64 {
+		return cached[addr]
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// iterate all the address
+		for i := 0; i < len(address); i++ {
+			getAddress(address[i].addr)
+		}
+	}
+}
+
+func BenchmarkParallelRead(b *testing.B) {
+	// generate a set of addresses
+	// case 1: read the state sequentially
+	// case 2: read them in parallel
+	address := generateAddress(10000)
+	cacheLock := sync.RWMutex{}
+	cached := make(map[common.Address]uint64)
+	for i := 0; i < len(address); i++ {
+		cached[address[i].addr] = uint64(i)
+	}
+	getAddress := func(addr common.Address) uint64 {
+		cacheLock.RLock()
+		defer cacheLock.RUnlock()
+		return cached[addr]
+	}
+
+	proc := parallel(make(chan func()))
+	proc.start(runtime.NumCPU())
+	wait := sync.WaitGroup{}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// iterator all the address in parallel
+		wait.Add(len(address))
+		for i := 0; i < len(address); i++ {
+			index := i
+			proc.do(func() {
+				getAddress(address[index].addr)
+				wait.Done()
+			})
+		}
+		wait.Wait()
+	}
+	proc.close()
 }
