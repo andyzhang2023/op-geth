@@ -97,22 +97,110 @@ func NewSlotDB(db *StateDB, txIndex int, baseTxIndex int, unconfirmedDBs *sync.M
 	return slotDB
 }
 
-// RevertSlotDB keep the Read list for conflict detect,
-// discard all state changes except:
-//   - nonce and balance of from address
-//   - balance of system address: will be used on merge to update SystemAddress's balance
-func (s *ParallelStateDB) RevertSlotDB(from common.Address) {
-	s.parallel.kvChangesInSlot = make(map[common.Address]StateKeys)
-	s.parallel.nonceChangesInSlot = make(map[common.Address]struct{})
-	s.parallel.balanceChangesInSlot = make(map[common.Address]struct{}, 1)
-	s.parallel.addrStateChangesInSlot = make(map[common.Address]bool) // 0: created, 1: deleted
+func (s *ParallelStateDB) PutSyncPool(parallelDBManager *ParallelDBManager) {
+	for key := range s.parallel.locatStateObjects {
+		delete(s.parallel.locatStateObjects, key)
+	}
+	addressToStateObjectsPool.Put(s.parallel.locatStateObjects)
 
-	selfStateObject := s.parallel.dirtiedStateObjectsInSlot[from]
-	s.parallel.dirtiedStateObjectsInSlot = make(map[common.Address]*stateObject, 2)
-	// keep these elements
-	s.parallel.dirtiedStateObjectsInSlot[from] = selfStateObject
-	s.parallel.balanceChangesInSlot[from] = struct{}{}
-	s.parallel.nonceChangesInSlot[from] = struct{}{}
+	for key := range s.parallel.codeReadsInSlot {
+		delete(s.parallel.codeReadsInSlot, key)
+	}
+	addressToBytesPool.Put(s.parallel.codeReadsInSlot)
+
+	for key := range s.parallel.codeHashReadsInSlot {
+		delete(s.parallel.codeHashReadsInSlot, key)
+	}
+	addressToHashPool.Put(s.parallel.codeHashReadsInSlot)
+
+	for key := range s.parallel.codeChangesInSlot {
+		delete(s.parallel.codeChangesInSlot, key)
+	}
+	addressToStructPool.Put(s.parallel.codeChangesInSlot)
+
+	for key := range s.parallel.kvChangesInSlot {
+		delete(s.parallel.kvChangesInSlot, key)
+	}
+	addressToStateKeysPool.Put(s.parallel.kvChangesInSlot)
+
+	for key := range s.parallel.kvReadsInSlot {
+		delete(s.parallel.kvReadsInSlot, key)
+	}
+	addressToStoragePool.Put(s.parallel.kvReadsInSlot)
+
+	for key := range s.parallel.balanceChangesInSlot {
+		delete(s.parallel.balanceChangesInSlot, key)
+	}
+	addressToStructPool.Put(s.parallel.balanceChangesInSlot)
+
+	for key := range s.parallel.balanceReadsInSlot {
+		delete(s.parallel.balanceReadsInSlot, key)
+	}
+	balancePool.Put(s.parallel.balanceReadsInSlot)
+
+	for key := range s.parallel.addrStateReadsInSlot {
+		delete(s.parallel.addrStateReadsInSlot, key)
+	}
+	addressToBoolPool.Put(s.parallel.addrStateReadsInSlot)
+
+	for key := range s.parallel.addrStateChangesInSlot {
+		delete(s.parallel.addrStateChangesInSlot, key)
+	}
+	addressToBoolPool.Put(s.parallel.addrStateChangesInSlot)
+
+	for key := range s.parallel.nonceChangesInSlot {
+		delete(s.parallel.nonceChangesInSlot, key)
+	}
+	addressToStructPool.Put(s.parallel.nonceChangesInSlot)
+
+	for key := range s.parallel.nonceReadsInSlot {
+		delete(s.parallel.nonceReadsInSlot, key)
+	}
+	addressToUintPool.Put(s.parallel.nonceReadsInSlot)
+
+	for key := range s.parallel.addrSnapDestructsReadsInSlot {
+		delete(s.parallel.addrSnapDestructsReadsInSlot, key)
+	}
+	addressToBoolPool.Put(s.parallel.addrSnapDestructsReadsInSlot)
+
+	for key := range s.parallel.dirtiedStateObjectsInSlot {
+		delete(s.parallel.dirtiedStateObjectsInSlot, key)
+	}
+	addressToStateObjectsPool.Put(s.parallel.dirtiedStateObjectsInSlot)
+
+	for key := range s.stateObjectsPending {
+		delete(s.stateObjectsPending, key)
+	}
+	addressToStructPool.Put(s.stateObjectsPending)
+
+	for key := range s.stateObjectsDirty {
+		delete(s.stateObjectsDirty, key)
+	}
+	addressToStructPool.Put(s.stateObjectsDirty)
+
+	for key := range s.logs {
+		delete(s.logs, key)
+	}
+	logsPool.Put(s.logs)
+
+	for key := range s.journal.dirties {
+		delete(s.journal.dirties, key)
+	}
+	s.journal.entries = s.journal.entries[:0]
+	journalPool.Put(s.journal)
+
+	for key := range s.snapDestructs {
+		delete(s.snapDestructs, key)
+	}
+	addressToStructPool.Put(s.snapDestructs)
+
+	for key := range s.parallel.createdObjectRecord {
+		delete(s.parallel.createdObjectRecord, key)
+	}
+	addressToStructPool.Put(s.parallel.createdObjectRecord)
+
+	s.reset()
+	parallelDBManager.reclaim(s)
 }
 
 // getStateDBBasePtr get the pointer of parallelStateDB.
@@ -142,7 +230,7 @@ func (s *ParallelStateDB) getStateObject(addr common.Address) *stateObject {
 func (s *ParallelStateDB) storeStateObj(addr common.Address, stateObject *stateObject) {
 	// The object could be created in SlotDB, if it got the object from DB and
 	// update it to the `s.parallel.stateObjects`
-	s.parallel.stateObjects.Store(addr, stateObject)
+	s.parallel.locatStateObjects[addr] = stateObject
 }
 
 func (s *ParallelStateDB) getStateObjectNoSlot(addr common.Address) *stateObject {
@@ -1672,4 +1760,98 @@ func (s *ParallelStateDB) FinaliseForParallel(deleteEmptyObjects bool, mainDB *S
 	}
 	// Invalidate journal because reverting across transactions is not allowed.
 	s.clearJournalAndRefund()
+}
+
+func (s *ParallelStateDB) reset() {
+
+	s.StateDB.db = nil
+	s.StateDB.prefetcher = nil
+	s.StateDB.trie = nil
+	s.StateDB.noTrie = false
+	s.StateDB.hasher = crypto.NewKeccakState()
+	s.StateDB.snaps = nil
+	s.StateDB.snap = nil
+	s.StateDB.snapParallelLock = sync.RWMutex{}
+	s.StateDB.trieParallelLock = sync.Mutex{}
+	s.StateDB.stateObjectDestructLock = sync.RWMutex{}
+	s.StateDB.snapDestructs = addressToStructPool.Get().(map[common.Address]struct{})
+	s.StateDB.originalRoot = common.Hash{}
+	s.StateDB.expectedRoot = common.Hash{}
+	s.StateDB.stateRoot = common.Hash{}
+	s.StateDB.fullProcessed = false
+	s.StateDB.AccountMux = sync.Mutex{}
+	s.StateDB.StorageMux = sync.Mutex{}
+	s.StateDB.accounts = make(map[common.Hash][]byte)
+	s.StateDB.storages = make(map[common.Hash]map[common.Hash][]byte)
+	s.StateDB.accountsOrigin = make(map[common.Address][]byte)
+	s.StateDB.storagesOrigin = make(map[common.Address]map[common.Hash][]byte)
+	s.StateDB.stateObjects = make(map[common.Address]*stateObject) // replaced by parallel.stateObjects in parallel mode
+	s.StateDB.stateObjectsPending = addressToStructPool.Get().(map[common.Address]struct{})
+	s.StateDB.stateObjectsDirty = addressToStructPool.Get().(map[common.Address]struct{})
+	s.StateDB.stateObjectsDestruct = make(map[common.Address]*types.StateAccount)
+	s.StateDB.stateObjectsDestructDirty = make(map[common.Address]*types.StateAccount)
+	s.StateDB.dbErr = nil
+	s.StateDB.refund = 0
+	s.StateDB.thash = common.Hash{}
+	s.StateDB.txIndex = 0
+	s.StateDB.logs = logsPool.Get().(map[common.Hash][]*types.Log)
+	s.StateDB.logSize = 0
+	s.StateDB.rwSet = nil
+	s.StateDB.mvStates = nil
+	s.StateDB.stat = nil
+	s.StateDB.preimages = nil
+	s.StateDB.accessList = nil
+	s.StateDB.transientStorage = nil
+	s.StateDB.journal = journalPool.Get().(*journal)
+	s.StateDB.validRevisions = nil
+	s.StateDB.nextRevisionId = 0
+	s.StateDB.AccountReads = 0
+	s.StateDB.AccountHashes = 0
+	s.StateDB.AccountUpdates = 0
+	s.StateDB.AccountCommits = 0
+	s.StateDB.StorageReads = 0
+	s.StateDB.StorageHashes = 0
+	s.StateDB.StorageUpdates = 0
+	s.StateDB.StorageCommits = 0
+	s.StateDB.SnapshotAccountReads = 0
+	s.StateDB.SnapshotStorageReads = 0
+	s.StateDB.SnapshotCommits = 0
+	s.StateDB.TrieDBCommits = 0
+	s.StateDB.TrieCommits = 0
+	s.StateDB.CodeCommits = 0
+	s.StateDB.TxDAGGenerate = 0
+	s.StateDB.AccountUpdated = 0
+	s.StateDB.StorageUpdated = 0
+	s.StateDB.AccountDeleted = 0
+	s.StateDB.StorageDeleted = 0
+	s.StateDB.isParallel = true
+	s.StateDB.parallel = ParallelState{}
+	s.StateDB.onCommit = nil
+
+	s.parallel.isSlotDB = true
+	s.parallel.SlotIndex = -1
+	s.parallel.stateObjects = nil
+	s.parallel.locatStateObjects = nil
+	s.parallel.baseStateDB = nil
+	s.parallel.baseTxIndex = -1
+	s.parallel.dirtiedStateObjectsInSlot = addressToStateObjectsPool.Get().(map[common.Address]*stateObject)
+	s.parallel.unconfirmedDBs = nil
+	s.parallel.nonceChangesInSlot = addressToStructPool.Get().(map[common.Address]struct{})
+	s.parallel.nonceReadsInSlot = addressToUintPool.Get().(map[common.Address]uint64)
+	s.parallel.balanceChangesInSlot = addressToStructPool.Get().(map[common.Address]struct{})
+	s.parallel.balanceReadsInSlot = balancePool.Get().(map[common.Address]*big.Int)
+	s.parallel.locatStateObjects = addressToStateObjectsPool.Get().(map[common.Address]*stateObject)
+	s.parallel.codeReadsInSlot = addressToBytesPool.Get().(map[common.Address][]byte)
+	s.parallel.codeHashReadsInSlot = addressToHashPool.Get().(map[common.Address]common.Hash)
+	s.parallel.codeChangesInSlot = addressToStructPool.Get().(map[common.Address]struct{})
+	s.parallel.kvChangesInSlot = addressToStateKeysPool.Get().(map[common.Address]StateKeys)
+	s.parallel.kvReadsInSlot = addressToStoragePool.Get().(map[common.Address]Storage)
+	s.parallel.addrStateReadsInSlot = addressToBoolPool.Get().(map[common.Address]bool)
+	s.parallel.addrStateChangesInSlot = addressToBoolPool.Get().(map[common.Address]bool)
+	s.parallel.addrSnapDestructsReadsInSlot = addressToBoolPool.Get().(map[common.Address]bool)
+	s.parallel.createdObjectRecord = addressToStructPool.Get().(map[common.Address]struct{})
+	s.parallel.needsRedo = false
+	s.parallel.useDAG = false
+	s.parallel.conflictCheckStateObjectCache = nil
+	s.parallel.conflictCheckKVReadCache = nil
 }
