@@ -671,7 +671,7 @@ func (s state) merge(maindb *StateDB) {
 		maindb.SelfDestruct(s.addr)
 		return
 	}
-	obj := maindb.GetOrNewStateObject(s.addr)
+	obj := maindb.getDeletedStateObject(s.addr)
 	if s.modified&ModifyBalance != 0 {
 		obj.SetBalance(s.balance)
 	}
