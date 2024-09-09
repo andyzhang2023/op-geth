@@ -117,53 +117,6 @@ type ParallelTxRequest struct {
 func (p *ParallelStateProcessor) init() {
 	log.Info("Parallel execution mode is enabled", "Parallel Num", p.parallelNum,
 		"CPUNum", runtime.NumCPU())
-	p.txResultChan = make(chan *ParallelTxResult, 20000)
-	p.stopSlotChan = make(chan struct{}, 1)
-	p.stopConfirmChan = make(chan struct{}, 1)
-	p.stopConfirmStage2Chan = make(chan struct{}, 1)
-
-	p.slotState = make([]*SlotState, p.parallelNum)
-	quickMergeNum := p.parallelNum / 2
-	for i := 0; i < p.parallelNum-quickMergeNum; i++ {
-		p.slotState[i] = &SlotState{
-			primaryWakeUpChan: make(chan struct{}, 1),
-			shadowWakeUpChan:  make(chan struct{}, 1),
-			primaryStopChan:   make(chan struct{}, 1),
-			shadowStopChan:    make(chan struct{}, 1),
-		}
-		// start the primary slot's goroutine
-		go func(slotIndex int) {
-			p.runSlotLoop(slotIndex, parallelPrimarySlot) // this loop will be permanent live
-		}(i)
-
-		// start the shadow slot.
-		// It is back up of the primary slot to make sure transaction can be redone ASAP,
-		// since the primary slot could be busy at executing another transaction
-		go func(slotIndex int) {
-			p.runSlotLoop(slotIndex, parallelShadowSlot)
-		}(i)
-	}
-
-	for i := p.parallelNum - quickMergeNum; i < p.parallelNum; i++ {
-		// init a quick merge slot
-		p.slotState[i] = &SlotState{
-			primaryWakeUpChan: make(chan struct{}, 1),
-			shadowWakeUpChan:  make(chan struct{}, 1),
-			primaryStopChan:   make(chan struct{}, 1),
-			shadowStopChan:    make(chan struct{}, 1),
-		}
-		go func(slotIndex int) {
-			p.runQuickMergeSlotLoop(slotIndex, parallelPrimarySlot)
-		}(i)
-		go func(slotIndex int) {
-			p.runQuickMergeSlotLoop(slotIndex, parallelShadowSlot)
-		}(i)
-	}
-
-	p.confirmStage2Chan = make(chan int, 10)
-	go func() {
-		p.runConfirmStage2Loop()
-	}()
 }
 
 // resetState clear slot state for each block.
@@ -307,11 +260,22 @@ func (p *ParallelStateProcessor) executeInSlot(blockContext vm.BlockContext, con
 	}
 
 	// Apply the transaction to the current state (included in the env).
-	result, err := ApplyMessage(evm, msg, gp)
+	// Apply the transaction to the current state (included in the env).
+	var (
+		result *ExecutionResult
+		err    error
+	)
+	if p.delayGasFee {
+		result, err = ApplyMessageDelayGasFee(evm, msg, gp)
+	} else {
+		result, err = ApplyMessage(evm, msg, gp)
+	}
+
 	if err != nil {
 		return &ParallelTxResult{
-			txReq: txReq,
-			err:   err,
+			txReq:  txReq,
+			err:    err,
+			result: result,
 		}
 	}
 
@@ -368,6 +332,7 @@ func (p *ParallelStateProcessor) executeInSlot(blockContext vm.BlockContext, con
 		err:        nil,
 		receipt:    receipt,
 		uncommited: slotDB,
+		result:     result,
 	}
 }
 
@@ -660,7 +625,6 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	txLevels := NewTxLevels(allTxsReq, runtimeDag)
 	starttime := time.Now()
 	var executeFailed, confirmedFailed int32 = 0, 0
-	var gasUsed uint64 = 0
 
 	// wait until all Txs have processed.
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
@@ -694,7 +658,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		return res
 	},
 		func(ptr *ParallelTxResult) error {
-			result := p.confirmTxResults(ptr, statedb, gp, &gasUsed)
+			result := p.confirmTxResults(ptr, statedb, gp, usedGas)
 			if result == nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
 				// it should never happen
