@@ -180,6 +180,13 @@ type jSelfDestruct struct {
 }
 
 func newJSelfDestruct(obj *state) *jSelfDestruct {
+	if obj == nil {
+		//@TODO: should we handle this case?
+		return &jSelfDestruct{
+			addr: common.Address{},
+			obj:  nil,
+		}
+	}
 	return &jSelfDestruct{
 		addr: obj.addr,
 		obj: &state{

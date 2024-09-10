@@ -80,7 +80,7 @@ func (pst *UncommittedDB) FinaliseRWSet() error {
 
 // @TODO drop?
 func (pst *UncommittedDB) TxIndex() int {
-	return 0
+	return pst.txIndex
 }
 
 func (pst *UncommittedDB) SetTxContext(txHash common.Hash, txIndex int) {
@@ -91,6 +91,11 @@ func (pst *UncommittedDB) SetTxContext(txHash common.Hash, txIndex int) {
 // ===============================================
 // Constructor
 // getDeletedObject vs getStateObject ?
+func (pst *UncommittedDB) debug(format string, args ...interface{}) {
+	if false {
+		fmt.Printf(fmt.Sprintf("---pevmstatedb[%d][%s]%s", pst.txIndex, pst.txHash.String(), format), args...)
+	}
+}
 
 func (pst *UncommittedDB) CreateAccount(addr common.Address) {
 	pst.journal.append(newJCreateAccount(pst.cache[addr], addr))
@@ -192,7 +197,7 @@ func (pst *UncommittedDB) GetCodeHash(addr common.Address) common.Hash {
 	if obj := pst.getObjectWithCode(addr); obj != nil {
 		return common.BytesToHash(obj.codeHash)
 	}
-	return types.EmptyCodeHash
+	return common.Hash{}
 }
 
 func (pst *UncommittedDB) GetCode(addr common.Address) []byte {
@@ -211,10 +216,15 @@ func (pst *UncommittedDB) GetCodeSize(addr common.Address) int {
 
 func (pst *UncommittedDB) SetCode(addr common.Address, code []byte) {
 	pst.journal.append(newJCode(pst.cache[addr], addr))
-	if obj := pst.getObjectWithCode(addr); obj == nil {
-		pst.cache.create(addr)
-	}
+	pst.getOrNewObject(addr)
 	pst.cache.setCode(addr, code)
+	// record prev state
+	deletedObj := pst.maindb.getDeletedStateObject(addr)
+	if deletedObj == nil {
+		pst.reads.recordCodeOnce(addr, common.Hash{}, nil, nil)
+	} else {
+		pst.reads.recordCodeOnce(addr, common.BytesToHash(deletedObj.CodeHash()), deletedObj.Code(), nil)
+	}
 }
 
 func (pst *UncommittedDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
@@ -432,7 +442,7 @@ func (pst *UncommittedDB) hasLogConflict(maindb *StateDB) error {
 	}
 	// this is not the first transaction in the block
 	if maindb.txIndex != int(pst.txIndex)-1 {
-		return fmt.Errorf("conflict logs, txIndex: %d, expected %d", maindb.txIndex, pst.txIndex)
+		return fmt.Errorf("conflict txIndex, txIndex: %d, expected %d", maindb.txIndex, pst.txIndex-1)
 	}
 	return nil
 }
@@ -575,18 +585,7 @@ func (pst *UncommittedDB) getOrNewObject(addr common.Address) *state {
 	return pst.cache.create(addr)
 }
 
-// getCode returns the code for the given address or nil if not found.
-// 1. it first gets from the cache.
-// 2. if not found, then get from the maindb, and then record it in the cache.
-func (pst *UncommittedDB) getObjectWithCode(addr common.Address) (st *state) {
-	var code []byte
-	var codeHash = types.EmptyCodeHash
-	defer func() {
-		// update the reads record
-		pst.reads.recordCodeOnce(addr, codeHash, code)
-	}()
-
-	// the account's code found in the cache, return it, and no need to record the reads again
+func (pst *UncommittedDB) getObjectWithCode(addr common.Address) *state {
 	obj := pst.getObject(addr)
 	if obj == nil {
 		return nil
@@ -594,22 +593,52 @@ func (pst *UncommittedDB) getObjectWithCode(addr common.Address) (st *state) {
 	if obj.codeIsLoaded() {
 		return obj
 	}
-	// now we known the code is not updated into cache, we need to update it after getting it from maindb
-	mainobj := pst.maindb.getStateObject(addr)
-	// the account doesn't exist in the maindb, just return nil
-	if mainobj == nil {
+	// try to load the code from maindb
+	deletedObject := pst.maindb.getStateObject(addr)
+	if deletedObject == nil {
 		return nil
 	}
-	// need to copy the balance, nonce and other common fields, if this is the first time to touch this object.
-	if pst.cache[addr] == nil {
-		pst.cache[addr] = copyObj(mainobj)
+	code, codeHash := deletedObject.Code(), common.BytesToHash(deletedObject.CodeHash())
+	obj.code = code
+	obj.codeHash = codeHash[:]
+	obj.codeSize = len(code)
+	return obj
+}
+
+// getObjectWithCode return an object with code, and load the code from maindb if it is not loaded.
+// it return nil if the object.deleted == true
+func (pst *UncommittedDB) getObjectWithCode2(addr common.Address) (st *state) {
+	var code []byte
+	var codeHash = common.Hash{}
+	var prev *state
+	// try to load the deleted state object from cache
+	if obj := pst.cache[addr]; obj != nil && obj.codeIsLoaded() {
+		return obj
 	}
-	code = mainobj.Code()
-	codeHash = crypto.Keccak256Hash(code)
-	pst.cache[addr].code = code
-	pst.cache[addr].codeHash = codeHash[:]
-	pst.cache[addr].codeSize = len(code)
-	return pst.cache[addr]
+	// try to load from maindb
+	deletedObj := pst.maindb.getDeletedStateObject(addr)
+	if deletedObj == nil {
+		return nil
+	}
+	defer func() {
+		// update the reads record
+		pst.reads.recordCodeOnce(addr, codeHash, code, prev)
+	}()
+	// record the codeHash, codeSize, code into the reads
+	code, codeHash = deletedObj.Code(), common.BytesToHash(deletedObj.CodeHash())
+	if pst.cache[addr] == nil {
+		pst.cache[addr] = copyObj(deletedObj)
+	}
+	// put the codeHash, codeSize, code into the cache
+	prev, cached := copyObj(deletedObj), pst.cache[addr]
+	cached.code = code
+	cached.codeHash = codeHash[:]
+	cached.codeSize = len(code)
+	// return the state object
+	if cached.deleted {
+		return nil
+	}
+	return cached
 }
 
 type state struct {
@@ -669,6 +698,10 @@ func (s state) conflicts(maindb *StateDB) error {
 	if obj == nil {
 		return nil
 	}
+	// they are all deleted, no need to compare anything
+	//if obj.deleted && s.deleted {
+	//	return nil
+	//}
 	if s.selfDestruct != obj.selfDestructed {
 		return errors.New("conflict: destruct")
 	}
@@ -678,7 +711,7 @@ func (s state) conflicts(maindb *StateDB) error {
 	if s.balance.Cmp(obj.Balance()) != 0 {
 		return fmt.Errorf("conflict: balance, expected:%d, actual:%d", s.balance.Uint64(), obj.data.Balance.Uint64())
 	}
-	// code is lazy loaded, and should be checked as less as possible.
+	// code is lazy loaded
 	if s.codeIsLoaded() && !bytes.Equal(obj.Code(), s.code) {
 		return fmt.Errorf("conflict: code, expected len:%d, actual len:%d", len(s.code), len(obj.Code()))
 	}
@@ -765,7 +798,7 @@ func (sts reads) recordKVOnce(addr common.Address, key, val common.Hash) {
 	}
 }
 
-func (sts reads) recordCodeOnce(addr common.Address, codeHash common.Hash, code []byte) {
+func (sts reads) recordCodeOnce(addr common.Address, codeHash common.Hash, code []byte, state *state) {
 	st := sts[addr]
 	// we can't check whether the code is loaded or not, by checking codeHash == nil or code == nil (maybe the code is empty)
 	// so we need another fields to record the code previous state.

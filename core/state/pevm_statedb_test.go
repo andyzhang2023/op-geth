@@ -1668,7 +1668,7 @@ func runTxsOnStateDB(txs Txs, db *StateDB, check CheckState) (common.Hash, error
 	// states before merge should be the same as the uncommitted db
 	for _, c := range check.BeforeMerge.Uncommited {
 		if err := c.Verify(db); err != nil {
-			return common.Hash{}, fmt.Errorf("[before merge][uncommited db] failed to verify : %v", err)
+			return common.Hash{}, fmt.Errorf("[before merge][statedbt db] failed to verify : %v", err)
 		}
 	}
 	return db.IntermediateRoot(true), nil
