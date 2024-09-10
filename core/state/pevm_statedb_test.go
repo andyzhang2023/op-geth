@@ -884,6 +884,7 @@ func TestPevmLogs(t *testing.T) {
 		},
 	}
 	state = newStateDB()
+	state.SetTxContext(thash, 0)
 	unstate = newUncommittedDB(newStateDB())
 	unstate.SetTxContext(thash, 0)
 	if err := runCase(txs, state, unstate, check); err != nil {

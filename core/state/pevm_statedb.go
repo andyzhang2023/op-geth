@@ -439,10 +439,11 @@ func (pst *UncommittedDB) hasLogConflict(maindb *StateDB) error {
 		if len(maindb.logs) != 0 {
 			return fmt.Errorf("conflict logs, logsLen: %d, expected 0", len(maindb.logs))
 		}
-	}
-	// this is not the first transaction in the block
-	if maindb.txIndex != int(pst.txIndex)-1 {
-		return fmt.Errorf("conflict txIndex, txIndex: %d, expected %d", maindb.txIndex, pst.txIndex-1)
+	} else {
+		// this is not the first transaction in the block
+		if maindb.txIndex != int(pst.txIndex)-1 {
+			return fmt.Errorf("conflict txIndex, txIndex: %d, expected %d", maindb.txIndex, pst.txIndex-1)
+		}
 	}
 	return nil
 }
