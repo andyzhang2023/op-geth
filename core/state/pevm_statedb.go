@@ -52,6 +52,8 @@ type UncommittedDB struct {
 	preimages      map[common.Hash][]byte
 	preimagesReads map[common.Hash][]byte
 
+	journal ujournal
+
 	maindb *StateDB
 }
 
@@ -91,6 +93,7 @@ func (pst *UncommittedDB) SetTxContext(txHash common.Hash, txIndex int) {
 // getDeletedObject vs getStateObject ?
 
 func (pst *UncommittedDB) CreateAccount(addr common.Address) {
+	pst.journal.append(newJCreateAccount(pst.cache[addr], addr))
 	obj := pst.getDeletedObject(addr, pst.maindb)
 	// keep the balance
 	pst.cache.create(addr)
@@ -152,12 +155,14 @@ func (pst *UncommittedDB) Prepare(rules params.Rules, sender, coinbase common.Ad
 //  2. object
 
 func (pst *UncommittedDB) SubBalance(addr common.Address, amount *big.Int) {
+	pst.journal.append(newJBalance(pst.cache[addr], addr))
 	obj := pst.getOrNewObject(addr)
 	newb := new(big.Int).Sub(obj.balance, amount)
 	pst.cache.setBalance(addr, newb)
 }
 
 func (pst *UncommittedDB) AddBalance(addr common.Address, amount *big.Int) {
+	pst.journal.append(newJBalance(pst.cache[addr], addr))
 	obj := pst.getOrNewObject(addr)
 	newb := new(big.Int).Add(obj.balance, amount)
 	pst.cache.setBalance(addr, newb)
@@ -178,6 +183,7 @@ func (pst *UncommittedDB) GetNonce(addr common.Address) uint64 {
 }
 
 func (pst *UncommittedDB) SetNonce(addr common.Address, nonce uint64) {
+	pst.journal.append(newJNonce(pst.cache[addr], addr))
 	pst.getOrNewObject(addr)
 	pst.cache.setNonce(addr, nonce)
 }
@@ -204,6 +210,7 @@ func (pst *UncommittedDB) GetCodeSize(addr common.Address) int {
 }
 
 func (pst *UncommittedDB) SetCode(addr common.Address, code []byte) {
+	pst.journal.append(newJCode(pst.cache[addr], addr))
 	if obj := pst.getObjectWithCode(addr); obj == nil {
 		pst.cache.create(addr)
 	}
@@ -228,6 +235,7 @@ func (pst *UncommittedDB) GetState(addr common.Address, hash common.Hash) common
 }
 
 func (pst *UncommittedDB) SetState(addr common.Address, key, value common.Hash) {
+	pst.journal.append(newJStorage(pst.cache[addr], addr, key))
 	obj := pst.getOrNewObject(addr)
 	oldvalue, ok := obj.state[key]
 	// it might be not loaded.
@@ -240,6 +248,7 @@ func (pst *UncommittedDB) SetState(addr common.Address, key, value common.Hash) 
 }
 
 func (pst *UncommittedDB) SelfDestruct(addr common.Address) {
+	pst.journal.append(newJSelfDestruct(pst.cache[addr]))
 	if obj := pst.getObject(addr); obj == nil {
 		return
 	}
@@ -278,11 +287,13 @@ func (pst *UncommittedDB) Empty(addr common.Address) bool {
 //  2. refunds
 
 func (pst *UncommittedDB) AddRefund(gas uint64) {
+	pst.journal.append(newJRefund(pst.refund))
 	pst.recordRefundOnce()
 	pst.refund += gas
 }
 
 func (pst *UncommittedDB) SubRefund(gas uint64) {
+	pst.journal.append(newJRefund(pst.refund))
 	pst.recordRefundOnce()
 	if pst.refund < gas {
 		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, pst.refund))
@@ -310,6 +321,7 @@ func (pst *UncommittedDB) GetTransientState(addr common.Address, key common.Hash
 	return pst.transientStorage.Get(addr, key)
 }
 func (pst *UncommittedDB) SetTransientState(addr common.Address, key, value common.Hash) {
+	pst.journal.append(newJTransientStorage(addr, key, value))
 	pst.transientStorage.Set(addr, key, value)
 }
 
@@ -332,10 +344,10 @@ func (pst *UncommittedDB) AddSlotToAccessList(addr common.Address, slot common.H
 // Snapshot Methods
 // (is it necessary to do snapshot and revert ?)
 func (pst *UncommittedDB) RevertToSnapshot(id int) {
-	pst.cache = make(writes)
+	pst.journal.revertTo(pst, id)
 }
 func (pst *UncommittedDB) Snapshot() int {
-	return 1
+	return pst.journal.snapshot()
 }
 
 // ===============================================
@@ -361,6 +373,7 @@ func (s *UncommittedDB) PackLogs(blockNumber uint64, blockHash common.Hash) []*t
 // ===============================================
 // Preimage Methods (EIP-1352: https://eips.ethereum.org/EIPS/eip-1352)
 func (pst *UncommittedDB) AddPreimage(hash common.Hash, preimage []byte) {
+	pst.journal.append(newJPreimage(hash))
 	pst.recordPreimageOnce(hash)
 	if _, ok := pst.preimages[hash]; !ok {
 		pi := make([]byte, len(preimage))
@@ -496,9 +509,6 @@ func (pst *UncommittedDB) Merge() error {
 	return nil
 }
 
-func (pst *UncommittedDB) diffPreimages(maindb *StateDB) {
-}
-
 // getDeletedObj returns the state object for the given address or nil if not found.
 // it first gets from the maindb, if not found, then get from the maindb.
 // it never modifies the maindb. the maindb is read-only.
@@ -616,6 +626,26 @@ type state struct {
 	selfDestruct bool
 	created      bool
 	deleted      bool
+}
+
+func (c *state) clone() *state {
+	newstate := make(map[common.Hash]common.Hash, len(c.state))
+	for k, v := range c.state {
+		newstate[k] = v
+	}
+	return &state{
+		modified:     c.modified,
+		addr:         c.addr,
+		balance:      new(big.Int).Set(c.balance),
+		nonce:        c.nonce,
+		code:         append([]byte(nil), c.code...),
+		codeHash:     append([]byte(nil), c.codeHash...),
+		codeSize:     c.codeSize,
+		state:        newstate,
+		selfDestruct: c.selfDestruct,
+		created:      c.created,
+		deleted:      c.deleted,
+	}
 }
 
 func (s *state) markAllModified() {
@@ -826,80 +856,4 @@ func (wst writes) merge(maindb *StateDB) {
 	for _, st := range wst {
 		st.merge(maindb)
 	}
-}
-
-type jBalance struct {
-	created bool // whether the object is newly created in the uncommitted db
-	addr    common.Address
-	balance *big.Int
-}
-
-type jNonce struct {
-	created bool
-	addr    common.Address
-	nonce   uint64
-}
-
-type jStorage struct {
-	created    bool
-	addr       common.Address
-	keyCreated bool // whether the key is newly created in the object
-	key, val   common.Hash
-}
-
-type jCode struct {
-	created bool
-	addr    common.Address
-	code    []byte
-}
-
-type jSelfDestruct struct {
-	addr common.Address
-	obj  *state
-}
-
-type jRefund struct {
-	prev uint64
-}
-
-type jPreimage struct {
-	created bool
-	hash    common.Hash
-	value   []byte
-}
-
-type jAccessList struct {
-	created bool
-	addr    common.Address
-	slot    common.Hash
-}
-
-type jLog struct {
-}
-
-type jTransientStorage struct {
-}
-
-type ujournal []ustate
-
-func (j *ujournal) append(st ustate) {
-	*j = append(*j, st)
-}
-
-func (j *ujournal) revertTo(db *UncommittedDB, snapshot int) {
-	if snapshot < 0 || snapshot >= len(*j) {
-		return // invalid snapshot index
-	}
-	for i := len(*j) - 1; i > snapshot; i-- {
-		(*j)[i].revert(db)
-	}
-	*j = (*j)[:snapshot]
-}
-
-func (j *ujournal) snapshot() int {
-	return len(*j) - 1
-}
-
-type ustate interface {
-	revert(db *UncommittedDB)
 }
