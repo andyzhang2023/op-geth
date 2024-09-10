@@ -1327,6 +1327,23 @@ func (c Check) Verify(state vm.StateDB) error {
 			return fmt.Errorf("preimage mismatch, expected:%s, actual:%s", string(data), string(preimages[hash]))
 		}
 
+	case "preimageExists":
+		hash := c[1].(common.Hash)
+		exists := c[2].(bool)
+		var preimages map[common.Hash][]byte
+		if db, ok := state.(*StateDB); ok {
+			preimages = db.preimages
+		} else if db, ok := state.(*UncommittedDB); ok {
+			preimages = db.preimages
+		} else {
+			panic("unknown stateDB type")
+		}
+		if _, ok := preimages[hash]; ok == exists {
+			return nil
+		} else {
+			return fmt.Errorf("preimageExists mismatch, expected:%t, actual:%t", exists, ok)
+		}
+
 	case "tstorage":
 		addr := c[1].(common.Address)
 		key := common.BytesToHash([]byte(c[2].(string)))
@@ -1337,13 +1354,37 @@ func (c Check) Verify(state vm.StateDB) error {
 			return fmt.Errorf("tstorage mismatch, key:%s, expected:%s, actual:%s", key.String(), val.String(), state.GetTransientState(addr, key).String())
 		}
 
+	case "transientExists":
+		addr := c[1].(common.Address)
+		key := common.BytesToHash([]byte(c[2].(string)))
+		exists := c[3].(bool)
+		var ts transientStorage
+		if db, ok := state.(*StateDB); ok {
+			ts = db.transientStorage
+		} else if db, ok := state.(*UncommittedDB); ok {
+			ts = db.transientStorage
+		} else {
+			panic("unknown stateDB type")
+		}
+		found := false
+		if _, ok := ts[addr]; ok {
+			if _, ok := ts[addr][key]; ok {
+				found = true
+			}
+		}
+		if found == exists {
+			return nil
+		} else {
+			return fmt.Errorf("transientExists mismatch, expected:%t, actual:%t", exists, found)
+		}
+
 	case "exists":
 		addr := c[1].(common.Address)
 		exists := c[2].(bool)
 		if state.Exist(addr) == exists {
 			return nil
 		} else {
-			return fmt.Errorf("exists mismatch, expected:%t, actual:%t", exists, state.Exist(addr))
+			return fmt.Errorf("exists mismatch,addr:%s, expected:%t, actual:%t", addr.String(), exists, state.Exist(addr))
 		}
 
 	case "empty":
@@ -1540,6 +1581,16 @@ func (op Op) Call(db vm.StateDB) error {
 	case "SelfDestruct6780":
 		addr := op[1].(common.Address)
 		db.Selfdestruct6780(addr)
+		return nil
+
+	case "Snapshot":
+		snapid := op[1].(*int)
+		*snapid = db.Snapshot()
+		return nil
+
+	case "Revert":
+		snapid := op[1].(*int)
+		db.RevertToSnapshot(*snapid)
 		return nil
 
 	default:
