@@ -1,0 +1,74 @@
+package state
+
+import (
+	"math/big"
+	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
+)
+
+func TestJournal(t *testing.T) {
+	var snapid int
+	var (
+		Address1 = common.Address{0x01}
+		Address2 = common.Address{0x02}
+		Address3 = common.Address{0x03}
+		Address4 = common.Address{0x04}
+		Address5 = common.Address{0x05}
+		Address6 = common.Address{0x06}
+	)
+	tx := Tx{
+		{"Snapshot", &snapid},
+		{"SetNonce", Address1, 1},
+		{"AddBalance", Address2, big.NewInt(100)},
+		{"SetState", Address3, "key", "value"},
+		{"SetCode", Address4, []byte{0x04}},
+		{"Create", Address5},
+		{"AddPreimage", common.Hash{0x3}, []byte{0x05}},
+		{"SetTransientStorage", Address6, "hash", "tx"},
+		{"AddRefund", 102},
+	}
+	revertTx := Tx{
+		{"Revert", &snapid},
+	}
+	beforeRevert := Checks{
+		{"nonce", Address1, 1},
+		{"balance", Address2, big.NewInt(100)},
+		{"state", Address3, "key", "value"},
+		{"code", Address4, []byte{0x04}},
+		{"exists", Address5, true},
+		{"preimage", common.Hash{0x3}, []byte{0x05}},
+		{"tstorage", Address6, "hash", "tx"},
+		{"refund", 102},
+	}
+	afterRevert := Checks{
+		{"exists", Address1, false},
+		{"exists", Address2, false},
+		{"exists", Address3, false},
+		{"exists", Address4, false},
+		{"exists", Address5, false},
+		{"preimageExists", common.Hash{0x3}, false},
+		{"tstorage", Address6, "hash", ""},
+		{"refund", 0},
+	}
+
+	statedb := newStateDB()
+	tx.Call(statedb)
+	if err := beforeRevert.Verify(statedb); err != nil {
+		t.Fatalf("[maindb]before revert: %v", err)
+	}
+	revertTx.Call(statedb)
+	if err := afterRevert.Verify(statedb); err != nil {
+		t.Fatalf("[maindb]after revert: %v", err)
+	}
+
+	uncommitted := NewUncommittedDB(newStateDB())
+	tx.Call(uncommitted)
+	if err := beforeRevert.Verify(uncommitted); err != nil {
+		t.Fatalf("[uncommitted]before revert: %v", err)
+	}
+	revertTx.Call(uncommitted)
+	if err := afterRevert.Verify(uncommitted); err != nil {
+		t.Fatalf("[uncommitted]after revert: %v", err)
+	}
+}
