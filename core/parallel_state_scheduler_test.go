@@ -166,6 +166,95 @@ func TestParallelProcess(t *testing.T) {
 	// Trie read/write (in memory) ?
 }
 
+func TestTxLevelSplit(t *testing.T) {
+	// case 1: split empty levels
+	// case 2: split 1 level into 1 chunk
+	// case 3: split 1 level into 2 chunks, each have 1 tx
+	// case 4: split 1 level into 3
+	txLevels := TxLevel{}
+	if len(txLevels.Split(1)) != 0 {
+		t.Fatalf("invalid split, expected:0, got:%d", len(txLevels.Split(1)))
+	}
+	txLevels = TxLevel{newTxReq(1, 2, 10)}
+	chunks := txLevels.Split(1)
+	if len(chunks) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks))
+	}
+	if len(chunks[0]) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks[0]))
+	}
+	mock := &mockTx{req: chunks[0][0]}
+	if mock.Value() != 10 {
+		t.Fatalf("invalid split, expected:10, got:%d", mock.Value())
+	}
+
+	txLevels = TxLevel{newTxReq(1, 2, 10), newTxReq(2, 3, 20)}
+	chunks = txLevels.Split(2)
+	if len(chunks) != 2 {
+		t.Fatalf("invalid split, expected:2, got:%d", len(chunks))
+	}
+	if len(chunks[0]) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks[0]))
+	}
+	if len(chunks[1]) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks[1]))
+	}
+	mock1, mock2 := &mockTx{req: chunks[0][0]}, &mockTx{req: chunks[1][0]}
+	if mock1.Value() != 10 {
+		t.Fatalf("invalid split, expected:10, got:%d", mock1.Value())
+	}
+	if mock2.Value() != 20 {
+		t.Fatalf("invalid split, expected:20, got:%d", mock2.Value())
+	}
+
+	txLevels = TxLevel{newTxReq(1, 2, 10), newTxReq(2, 3, 20), newTxReq(3, 4, 30)}
+	chunks = txLevels.Split(2)
+	if len(chunks) != 2 {
+		t.Fatalf("invalid split, expected:2, got:%d", len(chunks))
+	}
+	if len(chunks[0]) != 2 {
+		t.Fatalf("invalid split, expected:2, got:%d", len(chunks[0]))
+	}
+	if len(chunks[1]) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks[1]))
+	}
+	mock1, mock2, mock3 := &mockTx{req: chunks[0][0]}, &mockTx{req: chunks[0][1]}, &mockTx{req: chunks[1][0]}
+	if mock1.Value() != 10 {
+		t.Fatalf("invalid split, expected:10, got:%d", mock1.Value())
+	}
+	if mock2.Value() != 20 {
+		t.Fatalf("invalid split, expected:20, got:%d", mock2.Value())
+	}
+	if mock3.Value() != 30 {
+		t.Fatalf("invalid split, expected:30, got:%d", mock3.Value())
+	}
+
+	chunks = txLevels.Split(5)
+	if len(chunks) != 3 {
+		t.Fatalf("invalid split, expected:3, got:%d", len(chunks))
+	}
+	if len(chunks[0]) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks[0]))
+	}
+	if len(chunks[1]) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks[1]))
+	}
+	if len(chunks[2]) != 1 {
+		t.Fatalf("invalid split, expected:1, got:%d", len(chunks[2]))
+	}
+	mock1, mock2, mock3 = &mockTx{req: chunks[0][0]}, &mockTx{req: chunks[1][0]}, &mockTx{req: chunks[2][0]}
+	if mock1.Value() != 10 {
+		t.Fatalf("invalid split, expected:10, got:%d", mock1.Value())
+	}
+	if mock2.Value() != 20 {
+		t.Fatalf("invalid split, expected:20, got:%d", mock2.Value())
+	}
+	if mock3.Value() != 30 {
+		t.Fatalf("invalid split, expected:30, got:%d", mock3.Value())
+	}
+
+}
+
 func TestTxLevelRun(t *testing.T) {
 	// case 1: empty txs
 	case1 := func() {
