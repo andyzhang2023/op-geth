@@ -678,7 +678,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			receipts = append(receipts, result.receipt)
 			return nil
 		})
-	log.Info("ProcessParallel execute block done", "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil)
+	log.Info("ProcessParallel execute block done", "usedGas", *usedGas, "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil)
 	if err != nil {
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
@@ -686,6 +686,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			"txNum", txNum,
 			"len(commonTxs)", len(commonTxs),
 			"conflictNum", p.debugConflictRedoNum,
+			"gasLimit", header.GasLimit,
 			"txDAG", txDAG != nil)
 		return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", txIndex, allTxs[txIndex].Hash().Hex(), err)
 	}
