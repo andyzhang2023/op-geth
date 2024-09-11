@@ -150,6 +150,9 @@ func NewL1CostFunc(config *params.ChainConfig, statedb StateGetter) L1CostFunc {
 				}
 			}
 		}
+		if cachedFunc == nil {
+			log.Error("no L1 cost function available", "blockTime", blockTime, "rollUpdata.zeros", "forBlock", forBlock, rollupCostData.zeroes, "rollupData.ones", rollupCostData.ones)
+		}
 		fee, _ := cachedFunc(rollupCostData)
 		return fee
 	}
