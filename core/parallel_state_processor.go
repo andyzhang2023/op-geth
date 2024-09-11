@@ -510,7 +510,9 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	}
 
 	// Do IntermediateRoot after mergeSlotDB.
-	if !isByzantium {
+	if isByzantium {
+		statedb.Finalise(true)
+	} else {
 		root = statedb.IntermediateRoot(isEIP158).Bytes()
 	}
 	result.receipt.PostState = root
