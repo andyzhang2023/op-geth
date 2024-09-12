@@ -613,9 +613,10 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		allTxsReq[i] = txReq
 	}
 
-	p.delayGasFee = false
-	if txDAG != nil && txDAG.DelayGasFeeDistribution() {
-		p.delayGasFee = true
+	p.delayGasFee = true
+	// only disable delayGasFee when txDAG tells us to do so
+	if txDAG != nil && !txDAG.DelayGasFeeDistribution() {
+		p.delayGasFee = false
 	}
 
 	// if txDAG == nil, we treat all txs as no-dependency ones
