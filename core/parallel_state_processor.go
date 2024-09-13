@@ -476,7 +476,14 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 		return result
 	}
 	// we must check the gas limit before merge
-	if err := gp.SubGas(result.receipt.GasUsed); err != nil {
+	err := gp.SubGas(result.receipt.GasUsed)
+	defer func() {
+		if result.err != nil {
+			// some error happends, refund the gas
+			gp.AddGas(result.receipt.GasUsed)
+		}
+	}()
+	if err != nil {
 		log.Error("parallel: confirmTxResults() gas limit reached", "block", result.txReq.block.Number(),
 			"txIndex", result.txReq.txIndex, "GasUsed", result.receipt.GasUsed, "gp.Gas", gp.Gas(), "total.GasUsed", *gasUsed)
 		result.err = err
@@ -490,7 +497,7 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	// calculate the gasUsed
 	*gasUsed = *gasUsed + result.receipt.GasUsed
 	result.receipt.CumulativeGasUsed = *gasUsed
-	log.Info("parallel: confirmResult() gas used in tx", "block.gasLimit", result.txReq.block.GasLimit(), "block.number", result.txReq.block.Number(), "tx.index", result.txReq.txIndex, "tx.Hash", result.txReq.tx.Hash().String(), "tx.gasUsed", result.receipt.GasUsed, "tx.gas", result.txReq.tx.Gas(), "txmsg.gasLimit", result.txReq.msg.GasLimit, "totalGasUsed", *gasUsed)
+	log.Debug("parallel: confirmResult() gas used in tx", "block.gasLimit", result.txReq.block.GasLimit(), "block.number", result.txReq.block.Number(), "tx.index", result.txReq.txIndex, "tx.Hash", result.txReq.tx.Hash().String(), "tx.gasUsed", result.receipt.GasUsed, "tx.gas", result.txReq.tx.Gas(), "txmsg.gasLimit", result.txReq.msg.GasLimit, "totalGasUsed", *gasUsed)
 
 	var root []byte
 	header := result.txReq.block.Header()
