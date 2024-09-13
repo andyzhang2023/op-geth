@@ -123,7 +123,6 @@ func NewL1CostFunc(config *params.ChainConfig, statedb StateGetter) L1CostFunc {
 				// make it work just in case.
 				log.Info("l1 cost func re-used for different L1 block", "oldTime", forBlock, "newTime", blockTime)
 			}
-			forBlock = blockTime
 			// Note: the various state variables below are not initialized from the DB until this
 			// point to allow deposit transactions from the block to be processed first by state
 			// transition.  This behavior is consensus critical!
@@ -149,6 +148,12 @@ func NewL1CostFunc(config *params.ChainConfig, statedb StateGetter) L1CostFunc {
 					cachedFunc = newL1CostFuncEcotone(l1BaseFee, l1BlobBaseFee, l1BaseFeeScalar, l1BlobBaseFeeScalar)
 				}
 			}
+			// the returned L1CostFunc might be run in parallel, hence we need to update the forBlock after the cachedFunc is set
+			// otherwise we might hit a panic which says that the cachedFunc is nil
+			forBlock = blockTime
+		}
+		if cachedFunc == nil {
+			log.Error("no L1 cost function available", "blockTime", blockTime, "forBlock", forBlock, "rollUpdata.zeros", rollupCostData.zeroes, "rollupData.ones", rollupCostData.ones)
 		}
 		fee, _ := cachedFunc(rollupCostData)
 		return fee

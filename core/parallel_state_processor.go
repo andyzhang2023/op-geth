@@ -476,9 +476,18 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 		return result
 	}
 	// we must check the gas limit before merge
-	if err := gp.SubGas(result.receipt.GasUsed); err != nil {
-		log.Error("gas limit reached", "block", result.txReq.block.Number(),
-			"txIndex", result.txReq.txIndex, "GasUsed", result.receipt.GasUsed, "gp.Gas", gp.Gas())
+	err := gp.SubGas(result.receipt.GasUsed)
+	defer func() {
+		if result.err != nil {
+			// some error happends, refund the gas
+			gp.AddGas(result.receipt.GasUsed)
+		}
+	}()
+	if err != nil {
+		log.Error("parallel: confirmTxResults() gas limit reached", "block", result.txReq.block.Number(),
+			"txIndex", result.txReq.txIndex, "GasUsed", result.receipt.GasUsed, "gp.Gas", gp.Gas(), "total.GasUsed", *gasUsed)
+		result.err = err
+		return result
 	}
 	// merge result into maindb
 	if err := result.uncommited.Merge(); err != nil {
@@ -488,6 +497,7 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	// calculate the gasUsed
 	*gasUsed = *gasUsed + result.receipt.GasUsed
 	result.receipt.CumulativeGasUsed = *gasUsed
+	log.Debug("parallel: confirmResult() gas used in tx", "block.gasLimit", result.txReq.block.GasLimit(), "block.number", result.txReq.block.Number(), "tx.index", result.txReq.txIndex, "tx.Hash", result.txReq.tx.Hash().String(), "tx.gasUsed", result.receipt.GasUsed, "tx.gas", result.txReq.tx.Gas(), "txmsg.gasLimit", result.txReq.msg.GasLimit, "totalGasUsed", *gasUsed)
 
 	var root []byte
 	header := result.txReq.block.Header()
@@ -613,9 +623,10 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		allTxsReq[i] = txReq
 	}
 
-	p.delayGasFee = false
-	if txDAG != nil && txDAG.DelayGasFeeDistribution() {
-		p.delayGasFee = true
+	p.delayGasFee = true
+	// only disable delayGasFee when txDAG tells us to do so
+	if txDAG != nil && !txDAG.DelayGasFeeDistribution() {
+		p.delayGasFee = false
 	}
 
 	// if txDAG == nil, we treat all txs as no-dependency ones
@@ -625,11 +636,16 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
 	}
 	txLevels := NewTxLevels(allTxsReq, runtimeDag)
-	starttime := time.Now()
 	var executeFailed, confirmedFailed int32 = 0, 0
+	var executeDuration, confirmDuration, executeTimes, confirmTimes int64 = 0, 0, 0, 0
 
+	starttime := time.Now()
 	// wait until all Txs have processed.
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
+		defer func(t0 time.Time) {
+			atomic.AddInt64(&executeDuration, int64(time.Since(t0)))
+			atomic.AddInt64(&executeTimes, 1)
+		}(time.Now())
 		// can be moved it into slot for efficiency, but signer is not concurrent safe
 		// Parallel Execution 1.0&2.0 is for full sync mode, Nonce PreCheck is not necessary
 		// And since we will do out-of-order execution, the Nonce PreCheck could fail.
@@ -648,7 +664,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		var statedb *state.StateDB = statedb
 		var txReq *ParallelTxRequest = ptr
 		//@TODO: testcase 1: tx1 consume too much gas, tx2 has not enough gas to execute
-		var gp *GasPool = new(GasPool).AddGas(gp.Gas())
+		var gp = new(GasPool).AddGas(block.GasLimit())
 		var blockNumber *big.Int = block.Number()
 		var blockHash common.Hash
 		res := p.executeInSlot(blockContext, config, cfg, statedb, txReq, gp, blockNumber, blockHash)
@@ -660,6 +676,10 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		return res
 	},
 		func(ptr *ParallelTxResult) error {
+			defer func(t0 time.Time) {
+				atomic.AddInt64(&confirmDuration, int64(time.Since(t0)))
+				atomic.AddInt64(&confirmTimes, 1)
+			}(time.Now())
 			result := p.confirmTxResults(ptr, statedb, gp, usedGas)
 			if result == nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
@@ -678,14 +698,18 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			receipts = append(receipts, result.receipt)
 			return nil
 		})
-	log.Info("ProcessParallel execute block done", "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil)
+	log.Info("ProcessParallel execute block done", "usedGas", *usedGas, "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil, "executeDuration", executeDuration, "executeTimes", executeTimes, "confirmDuration", time.Duration(confirmDuration), "confirmTimes", confirmTimes)
+	//fmt.Printf("ProcessParallel execute block done, parallel=%d, block=%d, levels=%d, txs=%d, duration=%s, executefailed=%d, confirmFailed=%d, txdag=%t, executeTimes=%d, executeDuration=%s, confirmTimes=%d, confirmDurations=%s\n", cap(runner), header.Number, len(txLevels), len(allTxsReq), time.Since(starttime), executeFailed, confirmedFailed, txDAG != nil, executeTimes, time.Duration(executeDuration), confirmTimes, time.Duration(confirmDuration))
 	if err != nil {
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
+			"txHash", allTxs[txIndex].Hash().String(),
 			"err", err,
 			"txNum", txNum,
 			"len(commonTxs)", len(commonTxs),
 			"conflictNum", p.debugConflictRedoNum,
+			"blockGasLimit", block.GasLimit(),
+			"gasLimit", header.GasLimit,
 			"txDAG", txDAG != nil)
 		return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", txIndex, allTxs[txIndex].Hash().Hex(), err)
 	}
