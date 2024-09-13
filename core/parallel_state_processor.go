@@ -636,11 +636,16 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
 	}
 	txLevels := NewTxLevels(allTxsReq, runtimeDag)
-	starttime := time.Now()
 	var executeFailed, confirmedFailed int32 = 0, 0
+	var executeDuration, confirmDuration, executeTimes, confirmTimes int64 = 0, 0, 0, 0
 
+	starttime := time.Now()
 	// wait until all Txs have processed.
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
+		defer func(t0 time.Time) {
+			atomic.AddInt64(&executeDuration, int64(time.Since(t0)))
+			atomic.AddInt64(&executeTimes, 1)
+		}(time.Now())
 		// can be moved it into slot for efficiency, but signer is not concurrent safe
 		// Parallel Execution 1.0&2.0 is for full sync mode, Nonce PreCheck is not necessary
 		// And since we will do out-of-order execution, the Nonce PreCheck could fail.
@@ -671,6 +676,10 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		return res
 	},
 		func(ptr *ParallelTxResult) error {
+			defer func(t0 time.Time) {
+				atomic.AddInt64(&confirmDuration, int64(time.Since(t0)))
+				atomic.AddInt64(&confirmTimes, 1)
+			}(time.Now())
 			result := p.confirmTxResults(ptr, statedb, gp, usedGas)
 			if result == nil {
 				atomic.AddInt32(&p.debugConflictRedoNum, 1)
@@ -689,7 +698,8 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			receipts = append(receipts, result.receipt)
 			return nil
 		})
-	log.Info("ProcessParallel execute block done", "usedGas", *usedGas, "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil)
+	log.Info("ProcessParallel execute block done", "usedGas", *usedGas, "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil, "executeDuration", executeDuration, "executeTimes", executeTimes, "confirmDuration", time.Duration(confirmDuration), "confirmTimes", confirmTimes)
+	//fmt.Printf("ProcessParallel execute block done, parallel=%d, block=%d, levels=%d, txs=%d, duration=%s, executefailed=%d, confirmFailed=%d, txdag=%t, executeTimes=%d, executeDuration=%s, confirmTimes=%d, confirmDurations=%s\n", cap(runner), header.Number, len(txLevels), len(allTxsReq), time.Since(starttime), executeFailed, confirmedFailed, txDAG != nil, executeTimes, time.Duration(executeDuration), confirmTimes, time.Duration(confirmDuration))
 	if err != nil {
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
