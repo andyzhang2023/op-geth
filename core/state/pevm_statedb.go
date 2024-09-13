@@ -38,6 +38,7 @@ type UncommittedDB struct {
 	accessList *accessList
 
 	// in the maindb, transientStorage survives only in the scope of a transaction, and no need to
+	//@todo make transientStorage lazy loaded
 	transientStorage transientStorage
 
 	// object reads and writes
@@ -49,6 +50,7 @@ type UncommittedDB struct {
 	refund     uint64
 
 	// in the maindb, preimages survives in the scope of block
+	// it might be too large that we need to lazy load it.
 	preimages      map[common.Hash][]byte
 	preimagesReads map[common.Hash][]byte
 
@@ -61,8 +63,6 @@ func NewUncommittedDB(maindb *StateDB) *UncommittedDB {
 	return &UncommittedDB{
 		accessList:       newAccessList(),
 		transientStorage: newTransientStorage(),
-		preimages:        make(map[common.Hash][]byte),
-		preimagesReads:   make(map[common.Hash][]byte),
 		maindb:           maindb,
 		reads:            make(reads),
 		cache:            make(writes),
@@ -378,7 +378,16 @@ func (pst *UncommittedDB) AddPreimage(hash common.Hash, preimage []byte) {
 }
 
 func (pst *UncommittedDB) recordPreimageOnce(hash common.Hash) {
-	if _, ok := pst.preimages[hash]; ok {
+	// first time to read the preimage
+	if pst.preimages == nil {
+		// load all preimages from maindb
+		pst.preimages = make(map[common.Hash][]byte)
+		pst.preimagesReads = make(map[common.Hash][]byte)
+		for h, pi := range pst.maindb.preimages {
+			pst.preimagesReads[h], pst.preimages[h] = pi, pi
+		}
+	}
+	if _, ok := pst.preimagesReads[hash]; ok {
 		return
 	}
 	// get and record the preimage state from the maindb
