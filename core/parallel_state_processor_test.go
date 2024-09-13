@@ -1,10 +1,14 @@
 package core
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
+	"os"
 	"runtime"
 	"sync"
 	"testing"
@@ -15,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -77,6 +82,74 @@ func genesisAlloc(addresses []*keypair, funds *big.Int) GenesisAlloc {
 		alloc[addr.addr] = GenesisAccount{Balance: funds}
 	}
 	return alloc
+}
+
+func TestPevmInsertChain(t *testing.T) {
+	from := 8000
+	to := 8000
+	endpoint := "https://opbnb-qanet-ec-5-seq-pevm-2.bk.nodereal.cc"
+	gJson := "/Users/awen/Desktop/Nodereal/aweneagle_projects/chain-infra/qa/gitops/qa-us/opbnb-qanet-ec-5/contracts-info/genesis.json"
+	genesis := loadGenesis(gJson)
+	blocks := fetchBlocks(uint64(from), uint64(to), endpoint)
+	chain := buildBlockChain(genesis, false)
+	if err := InsertChain(chain, blocks); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fetchBlocks(from, to uint64, endpoint string) []*types.Block {
+	client, err := ethclient.Dial(endpoint)
+	if err != nil {
+		panic(err)
+	}
+	defer client.Close()
+
+	var blocks []*types.Block
+	for i := from; i <= to; i++ {
+		block, err := client.BlockByNumber(context.Background(), big.NewInt(int64(i)))
+		if err != nil {
+			panic(err)
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
+func loadGenesis(jsonfile string) *Genesis {
+	// Open the JSON file
+	file, err := os.Open(jsonfile)
+	if err != nil {
+		panic("failed to open json file, err=" + err.Error())
+	}
+	defer file.Close()
+
+	// Read the file content
+	bytes, err := io.ReadAll(file)
+	if err != nil {
+		panic(fmt.Sprintf("failed to read genesis file: %v", err))
+	}
+
+	// Unmarshal the JSON content into the Genesis struct
+	var genesis Genesis
+	if err := json.Unmarshal(bytes, &genesis); err != nil {
+		panic(fmt.Sprintf("failed to unmarshal genesis JSON: %v", err))
+	}
+	return &genesis
+}
+
+func buildBlockChain(genesis *Genesis, parallel bool) *BlockChain {
+	archiveDb := rawdb.NewMemoryDatabase()
+	// Import the chain as an archive node for the comparison baseline
+	archive, err := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), genesis, nil, ethash.NewFaker(), vm.Config{EnableParallelExec: parallel}, nil, nil)
+	if err != nil {
+		panic(err)
+	}
+	return archive
+}
+
+func InsertChain(bc *BlockChain, blocks []*types.Block) error {
+	_, err := bc.InsertChain(blocks)
+	return err
 }
 
 func BenchmarkAkaka(b *testing.B) {
