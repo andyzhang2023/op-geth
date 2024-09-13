@@ -479,6 +479,8 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	if err := gp.SubGas(result.receipt.GasUsed); err != nil {
 		log.Error("gas limit reached", "block", result.txReq.block.Number(),
 			"txIndex", result.txReq.txIndex, "GasUsed", result.receipt.GasUsed, "gp.Gas", gp.Gas())
+		result.err = err
+		return result
 	}
 	// merge result into maindb
 	if err := result.uncommited.Merge(); err != nil {
@@ -649,7 +651,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		var statedb *state.StateDB = statedb
 		var txReq *ParallelTxRequest = ptr
 		//@TODO: testcase 1: tx1 consume too much gas, tx2 has not enough gas to execute
-		var gp *GasPool = new(GasPool).AddGas(gp.Gas())
+		var gp = new(GasPool).AddGas(block.GasLimit())
 		var blockNumber *big.Int = block.Number()
 		var blockHash common.Hash
 		res := p.executeInSlot(blockContext, config, cfg, statedb, txReq, gp, blockNumber, blockHash)
@@ -683,6 +685,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	if err != nil {
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,
+			"txHash", allTxs[txIndex].Hash().String(),
 			"err", err,
 			"txNum", txNum,
 			"len(commonTxs)", len(commonTxs),
