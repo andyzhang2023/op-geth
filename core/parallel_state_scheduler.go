@@ -12,21 +12,39 @@ var runner chan func()
 
 func init() {
 	runner = make(chan func(), runtime.NumCPU())
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go func() {
-			for f := range runner {
-				f()
-			}
-		}()
-	}
+	//for i := 0; i < runtime.NumCPU(); i++ {
+	//	go func() {
+	//		for f := range runner {
+	//			f()
+	//		}
+	//	}()
+	//}
 }
 
 func ParallelNum() int {
-	return len(runner)
+	return cap(runner)
 }
 
 // TxLevel contains all transactions who are independent to each other
 type TxLevel []*ParallelTxRequest
+
+func (tl TxLevel) SplitBy(chunkSize int) []TxLevel {
+	if len(tl) == 0 {
+		return nil
+	}
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+	result := make([]TxLevel, 0, len(tl)/chunkSize+1)
+	for i := 0; i < len(tl); i += chunkSize {
+		end := i + chunkSize
+		if end > len(tl) {
+			end = len(tl)
+		}
+		result = append(result, tl[i:end])
+	}
+	return result
+}
 
 func (tl TxLevel) Split(chunks int) []TxLevel {
 	if len(tl) == 0 {
@@ -142,19 +160,29 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 	// execute all transactions in parallel
 	for _, txLevel := range tls {
 		wait := sync.WaitGroup{}
-		wait.Add(len(txLevel))
+		//wait.Add(len(txLevel))
+		trunks := txLevel.Split(ParallelNum())
+		wait.Add(len(trunks))
+		//fmt.Printf("total:%d, trunks:%d, parallelNum:%d\n", len(txLevel), len(trunks), ParallelNum())
 		// split tx into chunks, to save the cost of channel communication
-		for _, txs := range txLevel.Split(ParallelNum()) {
+		for _, txs := range trunks {
 			// execute the transactions in parallel
 			temp := txs
-			runner <- func() {
+			//runner <- func() {
+			//	for _, tx := range temp {
+			//		res := execute(tx)
+			//		toConfirm.collect(res, res.err)
+			//	}
+			//	// replace wait.Done() with the wait.Add(), to improve performance
+			//	defer wait.Add(-len(temp))
+			//}
+			go func() {
 				for _, tx := range temp {
 					res := execute(tx)
 					toConfirm.collect(res, res.err)
 				}
-				// replace wait.Done() with the wait.Add(), to improve performance
-				defer wait.Add(-len(temp))
-			}
+				wait.Done()
+			}()
 		}
 		wait.Wait()
 		// all transactions of current level are executed, now try to confirm.
