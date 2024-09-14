@@ -1,10 +1,13 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -338,4 +341,130 @@ func NewTxLevels(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
 		final = append(final, dep2all[i])
 	}
 	return final
+}
+
+type executor struct {
+	// pace is the pace that this executor runs on the shared tasks
+	// i is the current index of the shared tasks that this executor is processing
+	pace, i int
+	// tasks shared by all executors
+	tasks []*task
+}
+
+// next() move the cursor i to the next task, and return -1 if it is the end
+// it must be thread-safe
+func (e *executor) next() int {
+	if len(e.tasks) <= e.i+1 {
+		return -1
+	}
+}
+
+var (
+	errNextLevel  = errors.New("next level")
+	errFinished   = errors.New("finished")
+	errProcessing = errors.New("aleady processing")
+)
+
+// process the current task
+// it must be thread-safe
+func (e *executor) process(allDep *dependencies, handler func(txReq *ParallelTxRequest)) (int, error) {
+	i := e.i
+	task := e.tasks[i]
+	// check whether the task is being processed or not, and skip it if it is
+	if prev := atomic.CompareAndSwapInt32(&task.processing, 0, 1); !prev {
+		return i, errProcessing
+	}
+	// find out its dependencies if it is not known
+	if !task.depKnown {
+		task.findOutDependencies(allDep)
+	}
+	// find out whether it should be processed or not, and if not:
+	//	1. set processing back to false
+	//	2. move it to next level
+	if !task.ready(e.tasks) {
+		task.processing = 0
+		return i, errNextLevel
+	}
+	// execute the task
+	handler(task.tx)
+	// mark the task as processed
+	task.finised = true
+	return i, nil
+}
+
+type task struct {
+	// whether the task is processing or not
+	processing int32
+	finised    bool
+	// whether tx's dependencies is known or not.
+	depKnown bool
+	tx       *ParallelTxRequest
+	// transactions that tx depends on
+	dependsOn []int
+}
+
+func (t *task) findOutDependencies(allDep *dependencies) {
+	// find out its dependencies
+	from, to := t.tx.msg.From, t.tx.msg.To
+	t.dependsOn = allDep.dependents(from, *to, t.tx.txIndex)
+	t.depKnown = true
+}
+
+// ready returns whether the task is ready to be processed or not
+func (t *task) ready(tasks []*task) bool {
+	if !t.depKnown {
+		return false
+	}
+	// no dependencies, ready to be processed
+	if len(t.dependsOn) == 0 {
+		return true
+	}
+	for _, dep := range t.dependsOn {
+		if !tasks[dep].finised {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *task) run(handler func(*ParallelTxRequest)) {
+	// execute the transaction
+}
+
+type dependencies struct {
+	from map[common.Address][]int
+	to   map[common.Address][]int
+}
+
+func (d *dependencies) add(from, to common.Address, txIndex int) {
+	if d.from == nil {
+		d.from = make(map[common.Address][]int)
+	}
+	if d.to == nil {
+		d.to = make(map[common.Address][]int)
+	}
+	d.from[from] = append(d.from[from], len(d.to[to]))
+	d.to[to] = append(d.to[to], len(d.from[from]))
+}
+
+func (d *dependencies) dependents(from, to common.Address, txIndex int) []int {
+	fromDep := d.filter(txIndex, d.from[from])
+	fromDep2 := d.filter(txIndex, d.from[to])
+	toDep := d.filter(txIndex, d.to[from])
+	toDep2 := d.filter(txIndex, d.to[to])
+	fromAll := append(fromDep, fromDep2...)
+	toAll := append(toDep, toDep2...)
+	return append(fromAll, toAll...)
+}
+
+// filter returns the indexes that are less than the txIndex, since no larger index can be dependented by the txIndex
+func (d *dependencies) filter(txIndex int, deps []int) []int {
+	var from []int
+	for i := len(deps) - 1; i >= 0; i-- {
+		if txIndex >= deps[i] {
+			break
+		}
+		from = append(from, deps[i])
+	}
+	return from
 }
