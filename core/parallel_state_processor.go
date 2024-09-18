@@ -132,12 +132,12 @@ func (p *ParallelStateProcessor) resetState(txNum int, statedb *state.StateDB) {
 	p.allTxReqs = make([]*ParallelTxRequest, 0)
 	p.slotDBsToRelease = make([]*state.ParallelStateDB, 0, txNum)
 
-	stateDBsToRelease := p.slotDBsToRelease
-	go func() {
-		for _, slotDB := range stateDBsToRelease {
-			slotDB.PutSyncPool(nil)
-		}
-	}()
+	//stateDBsToRelease := p.slotDBsToRelease
+	//go func() {
+	//	for _, slotDB := range stateDBsToRelease {
+	//		slotDB.PutSyncPool(nil)
+	//	}
+	//}()
 	for _, slot := range p.slotState {
 		slot.pendingTxReqList = make([]*ParallelTxRequest, 0)
 		slot.activatedType = parallelPrimarySlot
@@ -571,7 +571,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	misc.EnsureCreate2Deployer(p.config, block.Time(), statedb)
 
 	allTxs := block.Transactions()
-	//p.resetState(len(allTxs), statedb)
+	p.resetState(len(allTxs), statedb)
 
 	var (
 		// with parallel mode, vmenv will be created inside of slot
