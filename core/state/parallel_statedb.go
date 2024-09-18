@@ -200,7 +200,7 @@ func (s *ParallelStateDB) PutSyncPool(parallelDBManager *ParallelDBManager) {
 	addressToStructPool.Put(s.parallel.createdObjectRecord)
 
 	s.reset()
-	parallelDBManager.reclaim(s)
+	//parallelDBManager.reclaim(s)
 }
 
 // getStateDBBasePtr get the pointer of parallelStateDB.
