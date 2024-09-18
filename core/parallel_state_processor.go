@@ -135,7 +135,7 @@ func (p *ParallelStateProcessor) resetState(txNum int, statedb *state.StateDB) {
 	stateDBsToRelease := p.slotDBsToRelease
 	go func() {
 		for _, slotDB := range stateDBsToRelease {
-			slotDB.PutSyncPool()
+			slotDB.PutSyncPool(nil)
 		}
 	}()
 	for _, slot := range p.slotState {
@@ -571,7 +571,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	misc.EnsureCreate2Deployer(p.config, block.Time(), statedb)
 
 	allTxs := block.Transactions()
-	p.resetState(len(allTxs), statedb)
+	//p.resetState(len(allTxs), statedb)
 
 	var (
 		// with parallel mode, vmenv will be created inside of slot
