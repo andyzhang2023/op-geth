@@ -536,7 +536,6 @@ func TestPredictTxDAG(t *testing.T) {
 	if newLevel[0][0].msg.From != addr1 || newLevel[1][0].msg.From != addr2 {
 		t.Fatalf("failed, expected addr1, addr2, got:%v, %v", newLevel[0][0].msg.From, newLevel[1][0].msg.From)
 	}
-
 }
 
 func TestNewTxLevels(t *testing.T) {
@@ -578,17 +577,26 @@ func TestNewTxLevels(t *testing.T) {
 	assertEqual(levels([]uint64{1, 2, 3, 4, 5, 6}, [][]int{{-1}, nil, nil, nil, {-2}, {-2}}), [][]uint64{{1}, {2, 3, 4}, {5}, {6}}, t)
 
 	// case 7: 1 excluded tx + n no dependencies txs + n dependencies txs + 1 all-dependencies tx
-	assertEqual(levels([]uint64{1, 2, 3, 4, 5, 6, 7}, [][]int{{-1}, nil, nil, nil, {0, 1}, {2}, {-2}}), [][]uint64{{1}, {4, 2, 3}, {5, 6}, {7}}, t)
+	assertEqual(levels([]uint64{1, 2, 3, 4, 5, 6, 7}, [][]int{{-1}, nil, nil, nil, {0, 1}, {2}, {-2}}), [][]uint64{{1}, {2, 3, 4}, {5, 6}, {7}}, t)
 
 	// case 8:  n no dependencies txs + n all-dependencies txs
 	assertEqual(levels([]uint64{1, 2, 3, 4, 5}, [][]int{nil, nil, nil, {-2}, {-2}}), [][]uint64{{1, 2, 3}, {4}, {5}}, t)
 
 	// case 9: loop-back txdag
-	assertEqual(levels([]uint64{1, 2, 3, 4}, [][]int{{1}, nil, {0}, nil}), [][]uint64{{2, 4}, {1}, {3}}, t)
+	assertEqual(levels([]uint64{1, 2, 3, 4}, [][]int{{1}, nil, {0}, nil}), [][]uint64{{1, 2, 4}, {3}}, t)
+}
+
+func TestMultiLevel(t *testing.T) {
+	// case 7: 1 excluded tx + n no dependencies txs + n dependencies txs + 1 all-dependencies tx
+	assertEqual(levels([]uint64{1, 2, 3, 4, 5, 6, 7, 8}, [][]int{nil, nil, nil, {0}, nil, {1}, nil, {2}}), [][]uint64{{1, 2, 3, 5, 7}, {4, 6, 8}}, t)
+}
+
+func levels2(nonces []uint64, txdag [][]int) TxLevels {
+	return NewTxLevels(nonces2txs(nonces), int2txdag(txdag))
 }
 
 func levels(nonces []uint64, txdag [][]int) TxLevels {
-	return NewTxLevels(nonces2txs(nonces), int2txdag(txdag))
+	return NewTxLevels2(nonces2txs(nonces), int2txdag(txdag))
 }
 
 func nonces2txs(nonces []uint64) []*ParallelTxRequest {
@@ -629,6 +637,24 @@ func int2txdag(txdag [][]int) types.TxDAG {
 }
 
 func assertEqual(actual TxLevels, expected [][]uint64, t *testing.T) {
+	if len(actual) != len(expected) {
+		t.Fatalf("expected %d levels, got %d levels", len(expected), len(actual))
+		return
+	}
+	for i, txLevel := range actual {
+		if len(txLevel) != len(expected[i]) {
+			t.Fatalf("expected %d txs in level %d, got %d txs", len(expected[i]), i, len(txLevel))
+			return
+		}
+		for j, tx := range txLevel {
+			if tx.tx.Nonce() != expected[i][j] {
+				t.Fatalf("expected nonce: %d, got nonce: %d", tx.tx.Nonce(), expected[i][j])
+			}
+		}
+	}
+}
+
+func assertEqual2(actual TxLevels, expected [][]uint64, t *testing.T) {
 	if len(actual) != len(expected) {
 		t.Fatalf("expected %d levels, got %d levels", len(expected), len(actual))
 		return

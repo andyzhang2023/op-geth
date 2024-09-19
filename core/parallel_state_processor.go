@@ -666,7 +666,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		}
 	}
 
-	txLevels := NewTxLevels(allTxsReq, runtimeDag)
+	txLevels := NewTxLevels2(allTxsReq, runtimeDag)
 	var executeFailed, confirmedFailed int32 = 0, 0
 	var executeDuration, confirmDuration, executeTimes, confirmTimes int64 = 0, 0, 0, 0
 
@@ -733,7 +733,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 			return nil
 		})
 	log.Info("ProcessParallel execute block done", "usedGas", *usedGas, "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil, "executeDuration", executeDuration, "executeTimes", executeTimes, "confirmDuration", time.Duration(confirmDuration), "confirmTimes", confirmTimes)
-	//fmt.Printf("ProcessParallel execute block done, parallel=%d, block=%d, levels=%d, txs=%d, duration=%s, executefailed=%d, confirmFailed=%d, txdag=%t, executeTimes=%d, executeDuration=%s, confirmTimes=%d, confirmDurations=%s\n", cap(runner), header.Number, len(txLevels), len(allTxsReq), time.Since(starttime), executeFailed, confirmedFailed, txDAG != nil, executeTimes, time.Duration(executeDuration), confirmTimes, time.Duration(confirmDuration))
+	fmt.Printf("ProcessParallel execute block done, parallel=%d, block=%d, levels=%d, txs=%d, duration=%s, executefailed=%d, confirmFailed=%d, txdag=%t, executeTimes=%d, executeDuration=%s, confirmTimes=%d, confirmDurations=%s\n", cap(runner), header.Number, len(txLevels), len(allTxsReq), time.Since(starttime), executeFailed, confirmedFailed, txDAG != nil, executeTimes, time.Duration(executeDuration), confirmTimes, time.Duration(confirmDuration))
 	if err != nil {
 		log.Error("ProcessParallel execution failed", "block", header.Number, "usedGas", *usedGas,
 			"txIndex", txIndex,

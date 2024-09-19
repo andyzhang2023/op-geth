@@ -88,13 +88,13 @@ type confirmation struct {
 }
 
 // put into the right position (txIndex)
-func (cq *confirmQueue) collect(result *ParallelTxResult, err error) error {
+func (cq *confirmQueue) collect(result *ParallelTxResult) error {
 	if result.txReq.txIndex >= len(cq.queue) {
 		// TODO add metrics
 		return fmt.Errorf("txIndex outof range, req.index:%d, len(queue):%d", result.txReq.txIndex, len(cq.queue))
 	}
 	i := result.txReq.txIndex
-	cq.queue[i].result, cq.queue[i].executed, cq.queue[i].confirmed = result, err, nil
+	cq.queue[i].result, cq.queue[i].executed, cq.queue[i].confirmed = result, result.err, nil
 	return nil
 }
 
@@ -162,25 +162,18 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 	for _, txLevel := range tls {
 		wait := sync.WaitGroup{}
 		//wait.Add(len(txLevel))
-		trunks := txLevel.Split(ParallelNum())
+		//trunks := txLevel.Split(runtime.NumCPU())
+		trunks := TxLevels{txLevel}
 		wait.Add(len(trunks))
 		//fmt.Printf("total:%d, trunks:%d, parallelNum:%d\n", len(txLevel), len(trunks), ParallelNum())
 		// split tx into chunks, to save the cost of channel communication
 		for _, txs := range trunks {
 			// execute the transactions in parallel
 			temp := txs
-			//runner <- func() {
-			//	for _, tx := range temp {
-			//		res := execute(tx)
-			//		toConfirm.collect(res, res.err)
-			//	}
-			//	// replace wait.Done() with the wait.Add(), to improve performance
-			//	defer wait.Add(-len(temp))
-			//}
 			go func() {
 				for _, tx := range temp {
 					res := execute(tx)
-					toConfirm.collect(res, res.err)
+					toConfirm.collect(res)
 				}
 				wait.Done()
 			}()
@@ -229,6 +222,70 @@ func (tl TxLevel) predictTxDAG(dag types.TxDAG) {
 		marked[tx.msg.From] = tx.txIndex
 		marked[*tx.msg.To] = tx.txIndex
 	}
+}
+
+func NewTxLevels2(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
+	var levels TxLevels = make(TxLevels, 0, 8)
+	var currLevel int = 0
+
+	var enlargeLevelsIfNeeded = func(currLevel int, levels *TxLevels) {
+		if len(*levels) <= currLevel {
+			for i := len(*levels); i <= currLevel; i++ {
+				*levels = append(*levels, TxLevel{})
+			}
+		}
+	}
+
+	if len(all) == 0 {
+		return nil
+	}
+	if dag == nil {
+		return TxLevels{all}
+	}
+
+	marked := make(map[int]int, len(all))
+	for _, tx := range all {
+		dep := dag.TxDep(tx.txIndex)
+		switch true {
+		case dep != nil && dep.CheckFlag(types.ExcludedTxFlag),
+			dep != nil && dep.CheckFlag(types.NonDependentRelFlag):
+			// excluted tx, occupies the whole level
+			// or dependent-to-all tx, occupies the whole level, too
+			levels = append(levels, TxLevel{tx})
+			marked[tx.txIndex], currLevel = len(levels)-1, len(levels)
+
+		case dep == nil || len(dep.TxIndexes) == 0:
+			// dependent on none
+			enlargeLevelsIfNeeded(currLevel, &levels)
+			levels[currLevel] = append(levels[currLevel], tx)
+			marked[tx.txIndex] = currLevel
+
+		case dep != nil && len(dep.TxIndexes) > 0:
+			// dependent on others
+			// findout the correct level that the tx should be put
+			prevLevel := -1
+			for _, txIndex := range dep.TxIndexes {
+				if pl, ok := marked[int(txIndex)]; ok && pl > prevLevel {
+					prevLevel = pl
+				}
+			}
+			if prevLevel < 0 {
+				// broken DAG, just ignored it
+				enlargeLevelsIfNeeded(currLevel, &levels)
+				levels[currLevel] = append(levels[currLevel], tx)
+				marked[tx.txIndex] = currLevel
+				continue
+			}
+			enlargeLevelsIfNeeded(prevLevel+1, &levels)
+			levels[prevLevel+1] = append(levels[prevLevel+1], tx)
+			// record the level of this tx
+			marked[tx.txIndex] = prevLevel + 1
+
+		default:
+			panic("unexpected case")
+		}
+	}
+	return levels
 }
 
 // NewTxLevels generates the levels of transactions
