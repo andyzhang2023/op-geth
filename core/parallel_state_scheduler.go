@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -202,13 +203,37 @@ func (tls TxLevels) txCount() int {
 	return count
 }
 
+// predictTxDAG predicts the TxDAG by their from address and to address, and generates the levels of transactions
+func (tl TxLevel) predictTxDAG(dag types.TxDAG) {
+	marked := make(map[common.Address]int, len(tl))
+	for _, tx := range tl {
+		var deps []uint64
+		var tfrom, tto = -1, -1
+		if ti, ok := marked[tx.msg.From]; ok {
+			tfrom = ti
+		}
+		if ti, ok := marked[*tx.msg.To]; ok {
+			tto = ti
+		}
+		if tfrom >= 0 && tto >= 0 && tfrom > tto {
+			// keep deps ordered by the txIndex
+			tfrom, tto = tto, tfrom
+		}
+		if tfrom >= 0 {
+			deps = append(deps, uint64(tfrom))
+		}
+		if tto >= 0 {
+			deps = append(deps, uint64(tto))
+		}
+		dag.SetTxDep(tx.txIndex, types.TxDep{TxIndexes: deps})
+		marked[tx.msg.From] = tx.txIndex
+		marked[*tx.msg.To] = tx.txIndex
+	}
+}
+
 // NewTxLevels generates the levels of transactions
 // all is the transactions to be executed, who are ordered by the txIndex
 func NewTxLevels(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
-	for i := 0; i < len(all); i++ {
-		//@TODO we should not make the index to be txIndex
-		all[i].txIndex = i
-	}
 	defaultLevels := func(all []*ParallelTxRequest) TxLevels {
 		if len(all) == 0 {
 			return nil
@@ -291,7 +316,11 @@ func NewTxLevels(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
 		default:
 			if len(dep.TxIndexes) != 0 {
 				appendNormal(tx, level)
-				for _, txIndex := range dep.TxIndexes {
+				// we expect the dependencies ordered by the txIndex, like: [1,2,4]
+				// so we handle the dependencies in a reverse order, in an order like:
+				//		putCurrentLevel(4), putCurrentLevel(2), putCurrentLevel(1)
+				for i := len(dep.TxIndexes) - 1; i >= 0; i-- {
+					txIndex := dep.TxIndexes[i]
 					if int(txIndex) >= len(all) || all[txIndex] == nil {
 						// TODO add logs
 						// broken DAG, just ignored it

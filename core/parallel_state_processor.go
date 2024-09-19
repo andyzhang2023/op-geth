@@ -551,6 +551,18 @@ func (p *ParallelStateProcessor) doCleanUp() {
 	<-p.stopSlotChan
 }
 
+func tx2message(txs []*ParallelTxRequest, signer types.Signer, header *types.Header) {
+	for _, txReq := range txs {
+		msg, err := TransactionToMessage(txReq.tx, signer, header.BaseFee)
+		if err != nil {
+			log.Error("ProcessParallel TransactionToMessage failed", "block", header.Number, "txIndex", txReq.txIndex, "err", err)
+			fmt.Printf("ProcessParallel TransactionToMessage failed, block: %d, txIndex: %d, err: %v\n", header.Number, txReq.txIndex, err)
+			continue
+		}
+		txReq.msg = msg
+	}
+}
+
 // Process implements BEP-130 Parallel Transaction Execution
 func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (types.Receipts, []*types.Log, uint64, error) {
 	var (
@@ -623,23 +635,41 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		allTxsReq[i] = txReq
 	}
 
+	starttime := time.Now()
 	p.delayGasFee = true
 	// only disable delayGasFee when txDAG tells us to do so
 	if txDAG != nil && !txDAG.DelayGasFeeDistribution() {
 		p.delayGasFee = false
 	}
 
+	// convert txs to messages
+	txlist := TxLevel(allTxsReq).Split(ParallelNum())
+	wait := sync.WaitGroup{}
+	wait.Add(len(txlist))
+	for _, txs := range txlist {
+		go func(txs TxLevel) {
+			tx2message(txs, signer, header)
+			wait.Done()
+		}(txs)
+	}
+	wait.Wait()
+
 	// if txDAG == nil, we treat all txs as no-dependency ones
 	runtimeDag := txDAG
 	if runtimeDag == nil {
 		runtimeDag = &types.PlainTxDAG{}
+		// set deposit txs as execlutded
 		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
+		// calculate the txDAG of other transactions
+		if len(allTxsReq) > 1 {
+			TxLevel(allTxsReq[1:]).predictTxDAG(runtimeDag)
+		}
 	}
+
 	txLevels := NewTxLevels(allTxsReq, runtimeDag)
 	var executeFailed, confirmedFailed int32 = 0, 0
 	var executeDuration, confirmDuration, executeTimes, confirmTimes int64 = 0, 0, 0, 0
 
-	starttime := time.Now()
 	// wait until all Txs have processed.
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		defer func(t0 time.Time) {
@@ -650,14 +680,18 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		// Parallel Execution 1.0&2.0 is for full sync mode, Nonce PreCheck is not necessary
 		// And since we will do out-of-order execution, the Nonce PreCheck could fail.
 		// We will disable it and leave it to Parallel 3.0 which is for validator mode
-		msg, err := TransactionToMessage(ptr.tx, signer, header.BaseFee)
-		if err != nil {
-			return &ParallelTxResult{
-				txReq: ptr,
-				err:   err,
+		if ptr.msg == nil {
+			// the message might be failed to inited in the previous step, so we need to re-init it here, which
+			// is likely to be failed again, and then return the error message.
+			msg, err := TransactionToMessage(ptr.tx, signer, header.BaseFee)
+			if err != nil {
+				return &ParallelTxResult{
+					txReq: ptr,
+					err:   err,
+				}
 			}
+			ptr.msg = msg
 		}
-		ptr.msg = msg
 		var blockContext vm.BlockContext = blockContext
 		var config *params.ChainConfig = p.config
 		var cfg vm.Config = cfg
