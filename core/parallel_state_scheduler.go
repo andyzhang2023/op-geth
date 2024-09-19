@@ -98,6 +98,40 @@ func (cq *confirmQueue) collect(result *ParallelTxResult) error {
 	return nil
 }
 
+func (cq *confirmQueue) confirmWithTrust(level TxLevel, execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) (error, int) {
+	// find all able-to-confirm transactions, and try to confirm them
+	for _, tx := range level {
+		i := tx.txIndex
+		toConfirm := cq.queue[i]
+		// the tx has not been executed yet, which means the higher-index transactions can not be confirmed before it
+		// so stop the loop.
+		if toConfirm.result == nil {
+			break
+		}
+		switch true {
+		case toConfirm.executed != nil:
+			if err := cq.rerun(i, execute, confirm); err != nil {
+				// TODO add logs for err
+				// rerun failed, something very wrong.
+				return err, toConfirm.result.txReq.txIndex
+			}
+
+		default:
+			//try the first confirm
+			if err := confirm(toConfirm.result); err != nil {
+				// TODO add logs for err
+				if err = cq.rerun(i, execute, confirm); err != nil {
+					// TODO add logs for err
+					// rerun failed, something very wrong.
+					return err, toConfirm.result.txReq.txIndex
+				}
+			}
+		}
+		cq.confirmed = i
+	}
+	return nil, 0
+}
+
 // try to confirm txs as much as possible, they will be confirmed in a sequencial order.
 func (cq *confirmQueue) confirm(execute func(*ParallelTxRequest) *ParallelTxResult, confirm func(*ParallelTxResult) error) (error, int) {
 	// find all able-to-confirm transactions, and try to confirm them
@@ -158,6 +192,8 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 		confirmed: -1,
 	}
 
+	trustDAG := false
+
 	// execute all transactions in parallel
 	for _, txLevel := range tls {
 		wait := sync.WaitGroup{}
@@ -180,9 +216,16 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 		}
 		wait.Wait()
 		// all transactions of current level are executed, now try to confirm.
-		if err, txIndex := toConfirm.confirm(execute, confirm); err != nil {
-			// something very wrong, stop the process
-			return err, txIndex
+		if trustDAG {
+			if err, txIndex := toConfirm.confirmWithTrust(txLevel, execute, confirm); err != nil {
+				// something very wrong, stop the process
+				return err, txIndex
+			}
+		} else {
+			if err, txIndex := toConfirm.confirm(execute, confirm); err != nil {
+				// something very wrong, stop the process
+				return err, txIndex
+			}
 		}
 	}
 	return nil, 0
