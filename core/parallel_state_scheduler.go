@@ -13,13 +13,13 @@ var runner chan func()
 
 func init() {
 	runner = make(chan func(), runtime.NumCPU())
-	//for i := 0; i < runtime.NumCPU(); i++ {
-	//	go func() {
-	//		for f := range runner {
-	//			f()
-	//		}
-	//	}()
-	//}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			for f := range runner {
+				f()
+			}
+		}()
+	}
 }
 
 func ParallelNum() int {
@@ -198,21 +198,23 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 	for _, txLevel := range tls {
 		wait := sync.WaitGroup{}
 		//wait.Add(len(txLevel))
-		//trunks := txLevel.Split(runtime.NumCPU())
-		trunks := TxLevels{txLevel}
+		trunks := txLevel.Split(runtime.NumCPU())
+		//trunks := TxLevels{txLevel}
 		wait.Add(len(trunks))
 		//fmt.Printf("total:%d, trunks:%d, parallelNum:%d\n", len(txLevel), len(trunks), ParallelNum())
 		// split tx into chunks, to save the cost of channel communication
 		for _, txs := range trunks {
 			// execute the transactions in parallel
 			temp := txs
-			go func() {
+			run := func() {
 				for _, tx := range temp {
 					res := execute(tx)
 					toConfirm.collect(res)
 				}
 				wait.Done()
-			}()
+			}
+			//go run()
+			runner <- run
 		}
 		wait.Wait()
 		// all transactions of current level are executed, now try to confirm.
