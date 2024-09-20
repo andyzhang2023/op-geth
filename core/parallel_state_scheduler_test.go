@@ -261,6 +261,57 @@ func assignTxIndex(txs []*ParallelTxRequest) {
 	}
 }
 
+// this is a special case for "conflicts found in tx levels".
+// It happends when an executed tx was not able to be merged before its following txs executed.
+// for example:
+//
+//	t1, t2, t3, t4, t5
+//
+// let's say we have the dependies:
+//
+//	t3 -> t2 -> t1
+//	t5 -> t4 -> t1
+//
+// so the execution order should be (before the bugfiexed)
+//
+//	level 1: t1,  		confirmed : t1
+//	level 2: t2, t4, 	confirmed : t2,  t4 is not able to be confirmed, because t3 was not executed
+//	level 3: t3, t5, 	confirmed : t3, t4, t5,  t5 will  be found conflict with t4
+//
+// after the fix, the execution order should be:
+//
+//	level 1: t1,  		confirmed : t1
+//	level 2: t2, t4 	confirmed : t2
+//	level 3: t3 		confirmed : t3, t4,  t5 will be delayed to next level until t4 is confirmed
+//	level 4: t5 		confirmed : t5
+func TestPevmConflictBeforeMerge(t *testing.T) {
+	putMainDB(map[int]int{1: 20, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0})
+	allReqs := []*ParallelTxRequest{
+		newTxReq(1, 2, 10), // 1->2 : 10
+		newTxReq(2, 3, 10), // 2->3 : 10
+		newTxReq(3, 6, 10), // 3->6 : 10
+		newTxReq(1, 4, 10), // 1->4 : 10
+		newTxReq(4, 5, 10), // 4->5 : 10
+	}
+
+	assignTxIndex(allReqs)
+	txdag := int2txdag([][]int{
+		nil, {0}, {1}, {0}, {3},
+	})
+	caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
+	err, _ := NewTxLevels2(allReqs, txdag).Run(caller.execute, caller.confirm)
+	ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 10, 6: 10})
+	if err != nil {
+		t.Fatalf("failed, err:%v", err)
+	}
+	if !ok {
+		t.Fatalf("invalid mainDB state")
+	}
+	if caller.conflictNum != 0 {
+		t.Fatalf("conflict found, conflict:%d", caller.conflictNum)
+	}
+}
+
 func TestTxLevelRun(t *testing.T) {
 	// case 1: empty txs
 	case1 := func() {

@@ -192,7 +192,7 @@ func (tls TxLevels) Run(execute func(*ParallelTxRequest) *ParallelTxResult, conf
 		confirmed: -1,
 	}
 
-	trustDAG := true
+	trustDAG := false
 
 	// execute all transactions in parallel
 	for _, txLevel := range tls {
