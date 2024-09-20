@@ -269,6 +269,72 @@ func (tl TxLevel) predictTxDAG(dag types.TxDAG) {
 	}
 }
 
+func NewTxLevels3(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
+	var levels TxLevels = make(TxLevels, 0, 8)
+	var currLevel int = 0
+	var marked = make(map[int]int, len(all))
+
+	var enlargeLevelsIfNeeded = func(currLevel int, levels *TxLevels) {
+		if len(*levels) <= currLevel {
+			for i := len(*levels); i <= currLevel; i++ {
+				*levels = append(*levels, TxLevel{})
+			}
+		}
+	}
+
+	var pushTx = func(tx *ParallelTxRequest) {
+		enlargeLevelsIfNeeded(currLevel, &levels)
+		levels[currLevel] = append(levels[currLevel], tx)
+		marked[tx.txIndex] = currLevel
+	}
+
+	if len(all) == 0 {
+		return nil
+	}
+	if dag == nil {
+		return TxLevels{all}
+	}
+
+	for _, tx := range all {
+		dep := dag.TxDep(tx.txIndex)
+		switch true {
+		case dep != nil && dep.CheckFlag(types.ExcludedTxFlag),
+			dep != nil && dep.CheckFlag(types.NonDependentRelFlag):
+			// excluted tx, occupies the whole level
+			// or dependent-to-all tx, occupies the whole level, too
+			levels = append(levels, TxLevel{tx})
+			marked[tx.txIndex], currLevel = len(levels)-1, len(levels)
+
+		case dep == nil || len(dep.TxIndexes) == 0:
+			// dependent on none
+			pushTx(tx)
+
+		case dep != nil && len(dep.TxIndexes) > 0:
+			// dependent on others
+			// findout the correct level that the tx should be put
+			prevLevel := -1
+			for _, txIndex := range dep.TxIndexes {
+				if pl, ok := marked[int(txIndex)]; ok && pl > prevLevel {
+					prevLevel = pl
+				}
+			}
+			if prevLevel < 0 {
+				// broken DAG, just ignored it
+				pushTx(tx)
+				continue
+			}
+			// if none of the tx's deps are in currLevel, just put tx in currLevel,
+			// otherwise, put it in prevLevel+1
+			currLevel = max(currLevel, prevLevel+1)
+			pushTx(tx)
+
+		default:
+			panic("unexpected case")
+		}
+	}
+	return levels
+}
+
 func NewTxLevels2(all []*ParallelTxRequest, dag types.TxDAG) TxLevels {
 	var levels TxLevels = make(TxLevels, 0, 8)
 	var currLevel int = 0
