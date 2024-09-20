@@ -299,7 +299,7 @@ func TestPevmConflictBeforeMerge(t *testing.T) {
 		nil, {0}, {1}, {0}, {3},
 	})
 	caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-	err, _ := NewTxLevels2(allReqs, txdag).Run(caller.execute, caller.confirm)
+	err, _ := NewTxLevels3(allReqs, txdag).Run(caller.execute, caller.confirm)
 	ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 10, 6: 10})
 	if err != nil {
 		t.Fatalf("failed, err:%v", err)
