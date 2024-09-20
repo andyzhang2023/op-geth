@@ -281,7 +281,7 @@ func TestTxLevelRun(t *testing.T) {
 			nil, nil, nil, nil,
 		})
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err, _ := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels2(allReqs, txdag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 11, 6: 21, 7: 31, 8: 41})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -316,7 +316,7 @@ func TestTxLevelRun(t *testing.T) {
 			nil, nil, {0}, {1},
 		})
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err, _ := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels2(allReqs, txdag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 11, 6: 21})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -351,7 +351,7 @@ func TestTxLevelRun(t *testing.T) {
 			{0}, nil, {-1}, {-1},
 		})
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err, _ := NewTxLevels(allReqs, txdag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels2(allReqs, txdag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 0, 2: 0, 3: 0, 4: 0, 5: 11, 6: 21})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -398,7 +398,7 @@ func TestTxLevelRun(t *testing.T) {
 			res[i+2000] = i
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err, _ := NewTxLevels(allReqs, nil).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels2(allReqs, nil).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(res)
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -423,7 +423,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(2, 3, 10),
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err, _ := NewTxLevels(allReqs, nil).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels2(allReqs, nil).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 5, 2: 20, 3: 10})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -448,7 +448,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(2, 3, 10),
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
-		err, _ := NewTxLevels(allReqs, dag).Run(caller.execute, caller.confirm)
+		err, _ := NewTxLevels2(allReqs, dag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 5, 2: 20, 3: 10})
 		if err != nil {
 			t.Fatalf("failed, err:%v", err)
@@ -495,7 +495,7 @@ func TestPredictTxDAG(t *testing.T) {
 	var dag = &types.PlainTxDAG{}
 	txs := buildLevels([][2]common.Address{})
 	txs.predictTxDAG(dag)
-	newLevel := NewTxLevels(txs, dag)
+	newLevel := NewTxLevels2(txs, dag)
 	if len(newLevel) != 0 {
 		t.Fatalf("failed, expected empty")
 	}
@@ -504,7 +504,7 @@ func TestPredictTxDAG(t *testing.T) {
 	txs = buildLevels([][2]common.Address{{addr1, addr2}})
 	dag = &types.PlainTxDAG{}
 	txs.predictTxDAG(dag)
-	newLevel = NewTxLevels(txs, dag)
+	newLevel = NewTxLevels2(txs, dag)
 	if len(newLevel) != 1 {
 		t.Fatalf("failed, expected 1, got:%d", len(newLevel))
 	}
@@ -515,7 +515,7 @@ func TestPredictTxDAG(t *testing.T) {
 	txs = buildLevels([][2]common.Address{{addr1, addr2}, {addr2, addr3}, {addr3, addr4}})
 	dag = &types.PlainTxDAG{}
 	txs.predictTxDAG(dag)
-	newLevel = NewTxLevels(txs, dag)
+	newLevel = NewTxLevels2(txs, dag)
 	if len(newLevel) != 3 {
 		t.Fatalf("failed, expected 3, got:%d", len(newLevel))
 	}
@@ -526,7 +526,7 @@ func TestPredictTxDAG(t *testing.T) {
 	txs = buildLevels([][2]common.Address{{addr1, addr2}, {addr2, addr3}, {addr4, addr2}, {addr3, addr1}})
 	dag = &types.PlainTxDAG{}
 	txs.predictTxDAG(dag)
-	newLevel = NewTxLevels(txs, dag)
+	newLevel = NewTxLevels2(txs, dag)
 	if len(newLevel) != 3 {
 		t.Fatalf("failed, expected 3, got:%d", len(newLevel))
 	}
@@ -589,10 +589,6 @@ func TestNewTxLevels(t *testing.T) {
 func TestMultiLevel(t *testing.T) {
 	// case 7: 1 excluded tx + n no dependencies txs + n dependencies txs + 1 all-dependencies tx
 	assertEqual(levels([]uint64{1, 2, 3, 4, 5, 6, 7, 8}, [][]int{nil, nil, nil, {0}, nil, {1}, nil, {2}}), [][]uint64{{1, 2, 3, 5, 7}, {4, 6, 8}}, t)
-}
-
-func levels2(nonces []uint64, txdag [][]int) TxLevels {
-	return NewTxLevels(nonces2txs(nonces), int2txdag(txdag))
 }
 
 func levels(nonces []uint64, txdag [][]int) TxLevels {
