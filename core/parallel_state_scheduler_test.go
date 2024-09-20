@@ -255,6 +255,12 @@ func TestTxLevelSplit(t *testing.T) {
 
 }
 
+func assignTxIndex(txs []*ParallelTxRequest) {
+	for i, tx := range txs {
+		tx.txIndex = i
+	}
+}
+
 func TestTxLevelRun(t *testing.T) {
 	// case 1: empty txs
 	case1 := func() {
@@ -277,6 +283,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(3, 7, 30),
 			newTxReq(4, 8, 40),
 		}
+		assignTxIndex(allReqs)
 		txdag := int2txdag([][]int{
 			nil, nil, nil, nil,
 		})
@@ -312,6 +319,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(3, 5, 10),
 			newTxReq(4, 6, 20),
 		}
+		assignTxIndex(allReqs)
 		txdag := int2txdag([][]int{
 			nil, nil, {0}, {1},
 		})
@@ -347,6 +355,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(3, 5, 10),
 			newTxReq(4, 6, 20),
 		}
+		assignTxIndex(allReqs)
 		txdag := int2txdag([][]int{
 			{0}, nil, {-1}, {-1},
 		})
@@ -359,8 +368,8 @@ func TestTxLevelRun(t *testing.T) {
 		if !ok {
 			t.Fatalf("invalid mainDB state")
 		}
-		if caller.conflictNum != 2 {
-			t.Fatalf("conflict not found, conflict:%d", caller.conflictNum)
+		if caller.conflictNum != 0 {
+			t.Fatalf("conflict found, conflict:%d", caller.conflictNum)
 		}
 	}
 
@@ -398,6 +407,7 @@ func TestTxLevelRun(t *testing.T) {
 			res[i+2000] = i
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
+		assignTxIndex(allReqs)
 		err, _ := NewTxLevels2(allReqs, nil).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(res)
 		if err != nil {
@@ -423,6 +433,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(2, 3, 10),
 		}
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
+		assignTxIndex(allReqs)
 		err, _ := NewTxLevels2(allReqs, nil).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 5, 2: 20, 3: 10})
 		if err != nil {
@@ -437,6 +448,7 @@ func TestTxLevelRun(t *testing.T) {
 	case7 := func() {
 		dag := &types.PlainTxDAG{}
 		dag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
+		dag.SetTxDep(1, types.TxDep{TxIndexes: nil})
 		// mainDB: [1: 15, 2: 20, 3: 0]
 		// txs: [1->2:10, 2->3:10]
 		// txdag: [-1, nil]
@@ -447,6 +459,7 @@ func TestTxLevelRun(t *testing.T) {
 			newTxReq(1, 2, 10),
 			newTxReq(2, 3, 10),
 		}
+		assignTxIndex(allReqs)
 		caller := caller{txs: make(map[*ParallelTxRequest]*mockTx)}
 		err, _ := NewTxLevels2(allReqs, dag).Run(caller.execute, caller.confirm)
 		ok := checkMainDB(map[int]int{1: 5, 2: 20, 3: 10})
