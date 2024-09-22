@@ -57,8 +57,12 @@ var emptyAddr = common.Address{}
 
 type StateKeys map[common.Hash]struct{}
 
+const (
+	syncMapSlots = 256
+)
+
 type StateObjectSyncMap struct {
-	sync.Map
+	data [syncMapSlots]sync.Map
 }
 
 type DelayedGasFee struct {
@@ -68,8 +72,12 @@ type DelayedGasFee struct {
 	Coinbase common.Address
 }
 
+func addr2Slot(addr common.Address) int {
+	return int(addr[common.AddressLength/2]) % syncMapSlots
+}
+
 func (s *StateObjectSyncMap) LoadStateObject(addr common.Address) (*stateObject, bool) {
-	so, ok := s.Load(addr)
+	so, ok := s.data[addr2Slot(addr)].Load(addr)
 	if !ok {
 		return nil, ok
 	}
@@ -77,7 +85,15 @@ func (s *StateObjectSyncMap) LoadStateObject(addr common.Address) (*stateObject,
 }
 
 func (s *StateObjectSyncMap) StoreStateObject(addr common.Address, stateObject *stateObject) {
-	s.Store(addr, stateObject)
+	s.data[addr2Slot(addr)].Store(addr, stateObject)
+}
+
+func (s *StateObjectSyncMap) Delete(addr common.Address) {
+	s.data[addr2Slot(addr)].Delete(addr)
+}
+
+func (s *StateObjectSyncMap) Store(addr common.Address, stateObject *stateObject) {
+	s.data[addr2Slot(addr)].Store(addr, stateObject)
 }
 
 // loadStateObj is the entry for loading state object from stateObjects in StateDB or stateObjects in parallel
