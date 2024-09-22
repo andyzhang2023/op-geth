@@ -5,10 +5,13 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 func TestJournal(t *testing.T) {
 	var snapid int
+	var tx1 = common.Hash{0x012}
+	var txIndex = 20
 	var (
 		Address1 = common.Address{0x01}
 		Address2 = common.Address{0x02}
@@ -27,6 +30,8 @@ func TestJournal(t *testing.T) {
 		{"AddPreimage", common.Hash{0x3}, []byte{0x05}},
 		{"SetTransientStorage", Address6, "hash", "tx"},
 		{"AddRefund", 102},
+		{"AddLog", &types.Log{TxHash: tx1, Data: []byte("hello"), TxIndex: uint(txIndex)}},
+		{"AddLog", &types.Log{TxHash: tx1, Data: []byte("world"), TxIndex: uint(txIndex)}},
 	}
 	revertTx := Tx{
 		{"Revert", &snapid},
@@ -40,6 +45,9 @@ func TestJournal(t *testing.T) {
 		{"preimage", common.Hash{0x3}, []byte{0x05}},
 		{"tstorage", Address6, "hash", "tx"},
 		{"refund", 102},
+		{"log", tx1, 0, []byte("hello"), txIndex, 0},
+		{"log", tx1, 1, []byte("world"), txIndex, 1},
+		{"loglen", 2},
 	}
 	afterRevert := Checks{
 		{"exists", Address1, false},
@@ -50,9 +58,11 @@ func TestJournal(t *testing.T) {
 		{"preimageExists", common.Hash{0x3}, false},
 		{"tstorage", Address6, "hash", ""},
 		{"refund", 0},
+		{"loglen", 0},
 	}
 
 	statedb := newStateDB()
+	statedb.SetTxContext(tx1, txIndex)
 	tx.Call(statedb)
 	if err := beforeRevert.Verify(statedb); err != nil {
 		t.Fatalf("[maindb]before revert: %v", err)
@@ -63,6 +73,7 @@ func TestJournal(t *testing.T) {
 	}
 
 	uncommitted := NewUncommittedDB(newStateDB())
+	uncommitted.SetTxContext(tx1, txIndex)
 	tx.Call(uncommitted)
 	if err := beforeRevert.Verify(uncommitted); err != nil {
 		t.Fatalf("[uncommitted]before revert: %v", err)

@@ -348,6 +348,7 @@ func (pst *UncommittedDB) Snapshot() int {
 // ===============================================
 // Logs Methods
 func (pst *UncommittedDB) AddLog(log *types.Log) {
+	pst.journal.append(&jLog{i: uint(len(pst.logs))})
 	log.TxHash = pst.txHash
 	log.TxIndex = uint(pst.txIndex)
 	// we don't need to set Index now, because it will be recalculated when merging into maindb
