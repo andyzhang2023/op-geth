@@ -207,6 +207,17 @@ func (j *jSelfDestruct) revert(db *UncommittedDB) {
 	db.cache[j.addr] = j.obj
 }
 
+type jLogs struct {
+}
+
+func (j *jLogs) revert(db *UncommittedDB) {
+	if len(db.logs) == 0 {
+		// it should never happen
+		return
+	}
+	db.logs = db.logs[:len(db.logs)-1]
+}
+
 type jRefund struct {
 	prev uint64
 }
