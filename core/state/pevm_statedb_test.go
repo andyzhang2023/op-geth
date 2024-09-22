@@ -2,14 +2,21 @@ package state
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/rand"
 	"fmt"
 	"math/big"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/triedb/hashdb"
@@ -1754,4 +1761,181 @@ func runCase(txs Txs, state *StateDB, unstate *UncommittedDB, check CheckState) 
 func Diff(a, b *StateDB) []common.Hash {
 	// compare the two stateDBs, and return the different objects
 	return nil
+}
+
+type object struct {
+	data int
+}
+
+type HashSyncMap struct {
+	cap  int
+	maps []sync.Map
+}
+
+func newHashSyncMap(cap int) *HashSyncMap {
+	hsm := &HashSyncMap{cap: cap, maps: make([]sync.Map, cap)}
+	return hsm
+}
+
+func (hsm *HashSyncMap) Load(key interface{}) (value any, ok bool) {
+	addr := key.(common.Address)
+	slot := hash2int(addr) % hsm.cap
+	return hsm.maps[slot].Load(key)
+}
+
+func (hsm *HashSyncMap) Store(key, val interface{}) {
+	addr := key.(common.Address)
+	slot := hash2int(addr) % hsm.cap
+	hsm.maps[slot].Store(key, val)
+}
+
+type HashMutexMap struct {
+	cap  int
+	maps []struct {
+		sync.Mutex
+		data map[common.Address]*object
+	}
+}
+
+func newHashMutexMap(cap int) *HashMutexMap {
+	hmm := &HashMutexMap{cap: cap, maps: make([]struct {
+		sync.Mutex
+		data map[common.Address]*object
+	}, cap)}
+	for i := 0; i < cap; i++ {
+		hmm.maps[i].data = make(map[common.Address]*object)
+	}
+	return hmm
+}
+
+func (hmm *HashMutexMap) Load(key interface{}) (value any, ok bool) {
+	addr := key.(common.Address)
+	slot := hash2int(addr) % hmm.cap
+	cache := &hmm.maps[slot]
+	cache.Mutex.Lock()
+	defer cache.Mutex.Unlock()
+	value, ok = cache.data[addr]
+	return value, ok
+}
+
+func (hmm *HashMutexMap) Store(key, val interface{}) {
+	addr := key.(common.Address)
+	obj := val.(*object)
+	slot := hash2int(addr) % hmm.cap
+	cache := &hmm.maps[slot]
+	cache.Mutex.Lock()
+	defer cache.Mutex.Unlock()
+	cache.data[addr] = obj
+}
+
+type istore interface {
+	Store(key, val interface{})
+	Load(key interface{}) (value any, ok bool)
+}
+
+type DB struct {
+	cache   istore
+	persist map[common.Address]*object
+}
+
+func newDB(cache istore, addresses []common.Address) *DB {
+	db := &DB{cache: cache, persist: make(map[common.Address]*object)}
+	i := 0
+	for _, addr := range addresses {
+		db.persist[addr] = &object{data: i}
+		i++
+	}
+	return db
+}
+
+func (db *DB) Get(addr common.Address) *object {
+	if obj, ok := db.cache.Load(addr); ok {
+		return obj.(*object)
+	}
+	obj := db.persist[addr]
+	db.cache.Store(addr, obj)
+	return obj
+}
+
+func hash2int(addr common.Address) int {
+	return int(addr[common.AddressLength/2])
+}
+
+func randAddresses(num int) []common.Address {
+	addresses := make([]common.Address, num)
+	for i := 0; i < len(addresses); i++ {
+		addr, _ := randAddress()
+		addresses[i] = addr
+	}
+	return addresses
+}
+
+func randAddress() (common.Address, *ecdsa.PrivateKey) {
+	// Generate a new private key using rand.Reader
+	key, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to generate private key: %v", err))
+	}
+	return crypto.PubkeyToAddress(key.PublicKey), key
+}
+
+func accessWithMultiProcesses(db *DB, parallelNum int, queryNum int, randAddress []common.Address) {
+	wait := sync.WaitGroup{}
+	wait.Add(parallelNum)
+	for p := 0; p < parallelNum; p++ {
+		runner <- func() {
+			for j := 0; j < queryNum; j++ {
+				addr := randAddress[j%10000]
+				obj := db.Get(addr)
+				if obj != nil {
+					obj.data++
+				}
+				db.cache.Store(addr, obj)
+			}
+			wait.Done()
+		}
+	}
+	wait.Wait()
+}
+
+var runner = make(chan func(), runtime.NumCPU())
+
+func init() {
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			for f := range runner {
+				f()
+			}
+		}()
+	}
+}
+
+func BenchmarkSyncMap10000(b *testing.B) {
+	sm := sync.Map{}
+	runBench(&sm, b)
+}
+
+func BenchmarkHashSyncMap10000(b *testing.B) {
+	sm := newHashSyncMap(128)
+	runBench(sm, b)
+}
+
+func BenchmarkHashMutexMap10000(b *testing.B) {
+	sm := newHashMutexMap(128)
+	runBench(sm, b)
+}
+
+func runBench(sm istore, b *testing.B) {
+	randAddress := randAddresses(10000)
+	db := newDB(sm, randAddress)
+	b.ResetTimer()
+	var duration int64 = 0
+	var round int64 = 0
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		accessWithMultiProcesses(db, runtime.NumCPU(), 10000, randAddress)
+		atomic.AddInt64(&duration, int64(time.Since(start)))
+		atomic.AddInt64(&round, 1)
+	}
+	fmt.Printf("total cost:%s, rounds:%d, avg costs:%s\n", time.Duration(duration), round, time.Duration(duration/round))
 }
