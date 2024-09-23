@@ -703,21 +703,17 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		var blockHash common.Hash
 		res := p.executeInSlot(blockContext, config, cfg, statedb, txReq, gp, blockNumber, blockHash)
 		if res.err != nil {
-			log.Error("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err, "from", res.uncommited.Debug(ptr.msg.From), "to", res.uncommited.Debug(*ptr.msg.To))
+			log.Error("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from", res.uncommited.Debug(ptr.msg.From), "to", res.uncommited.Debug(*ptr.msg.To))
 			atomic.AddInt32(&executeFailed, 1)
 			atomic.AddInt32(&p.debugConflictRedoNum, 1)
 		}
-		if res.result != nil {
-			log.Info("ProcessParallel executed in slot",
-				"block", header.Number,
-				"txIndex", ptr.txIndex,
-				"err", res.err,
-				"gasUsed", res.result.UsedGas,
-				"gasLimit", ptr.tx.Gas(),
-				"msgGasLimit", ptr.msg.GasLimit,
-				"initialGas", res.result.InitialGas,
-				"remainingGas", res.result.RemainingGas,
-				"gasRefunded", res.result.RefundedGas,
+		if res.result != nil && res.result.Err != nil {
+			log.Info("ProcessParallel evm execute tx failed",
+				"block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(),
+				"isDeposit", ptr.msg.IsDepositTx, "vmerr", res.result.Err.Error(), "err", res.err,
+				"from", res.uncommited.Debug(ptr.msg.From), "to", res.uncommited.Debug(*ptr.msg.To),
+				"gasUsed", res.result.UsedGas, "gasLimit", ptr.tx.Gas(), "msgGasLimit", ptr.msg.GasLimit,
+				"initialGas", res.result.InitialGas, "remainingGas", res.result.RemainingGas, "gasRefunded", res.result.RefundedGas,
 			)
 		}
 		return res
