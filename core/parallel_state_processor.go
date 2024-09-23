@@ -273,9 +273,10 @@ func (p *ParallelStateProcessor) executeInSlot(blockContext vm.BlockContext, con
 
 	if err != nil {
 		return &ParallelTxResult{
-			txReq:  txReq,
-			err:    err,
-			result: result,
+			uncommited: slotDB,
+			txReq:      txReq,
+			err:        err,
+			result:     result,
 		}
 	}
 

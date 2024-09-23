@@ -39,10 +39,10 @@ var DebugInnerExecutionDuration time.Duration
 // ExecutionResult includes all output after executing given evm
 // message no matter the execution itself is successful or not.
 type ExecutionResult struct {
-	InitialGas   uint64
-	RemainingGas uint64 // Remaining gas after execution
 	UsedGas      uint64 // Total used gas, not including the refunded gas
 	RefundedGas  uint64 // Total gas refunded after execution
+	InitialGas   uint64 // Initial gas provided to the message
+	RemainingGas uint64 // Remaining gas after execution
 	Err          error  // Any error encountered during the execution(listed in core/vm/errors.go)
 	ReturnData   []byte // Returned data from evm(function result or data supplied with revert opcode)
 	delayFees    *state.DelayedGasFee
@@ -558,10 +558,12 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 	if st.msg.IsDepositTx && rules.IsOptimismRegolith {
 		// Skip coinbase payments for deposit tx in Regolith
 		return &ExecutionResult{
-			UsedGas:     st.gasUsed(),
-			RefundedGas: gasRefund,
-			Err:         vmerr,
-			ReturnData:  ret,
+			UsedGas:      st.gasUsed(),
+			RefundedGas:  gasRefund,
+			RemainingGas: st.gasRemaining,
+			InitialGas:   st.initialGas,
+			Err:          vmerr,
+			ReturnData:   ret,
 		}, nil
 	}
 
@@ -614,10 +616,10 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		}
 	}
 	return &ExecutionResult{
-		InitialGas:   st.initialGas,
-		RemainingGas: st.gasRemaining,
 		UsedGas:      st.gasUsed(),
 		RefundedGas:  gasRefund,
+		RemainingGas: st.gasRemaining,
+		InitialGas:   st.initialGas,
 		Err:          vmerr,
 		ReturnData:   ret,
 		delayFees: &state.DelayedGasFee{
