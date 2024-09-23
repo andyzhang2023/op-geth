@@ -703,7 +703,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		var blockHash common.Hash
 		res := p.executeInSlot(blockContext, config, cfg, statedb, txReq, gp, blockNumber, blockHash)
 		if res.err != nil {
-			log.Error("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err)
+			log.Error("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "err", res.err, "from", res.uncommited.Debug(ptr.msg.From), "to", res.uncommited.Debug(*ptr.msg.To))
 			atomic.AddInt32(&executeFailed, 1)
 			atomic.AddInt32(&p.debugConflictRedoNum, 1)
 		}

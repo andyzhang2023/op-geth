@@ -374,6 +374,32 @@ func (s *UncommittedDB) PackLogs(blockNumber uint64, blockHash common.Hash) []*t
 	return s.logs
 }
 
+func (s *UncommittedDB) Debug(addr common.Address) string {
+	read := s.reads[addr]
+	write := s.cache[addr]
+	switch true {
+	case read == nil && write == nil:
+		return fmt.Sprintf("addr:%s, readState empty! cacheState empty!\n", addr.String())
+
+	case read == nil && write != nil:
+		// this should never happen, because the read should be recorded before each write
+		return fmt.Sprintf("addr:%s, readState empty! something very wrong!  cacheState modified:%d, nonce:%d, balance:%d, codeHash:%s, codeLen:%d, state:%v, selfDestruct:%t, deleted:%t, created:%t \n",
+			addr.String(), write.modified, write.nonce, write.balance, common.Bytes2Hex(write.codeHash), write.codeSize, write.state, write.selfDestruct, write.deleted, write.created,
+		)
+
+	case read != nil && write == nil:
+		return fmt.Sprintf("addr:%s, readState nonce:%d, balance:%d, codeHash:%s, codeLen:%d, state:%v selfDestructed:%t, deleted:%t, created:%t ;  cacheState nil\n",
+			addr.String(), read.nonce, read.balance, common.Bytes2Hex(read.codeHash), read.codeSize, read.state, read.selfDestruct, read.deleted, read.created,
+		)
+
+	default:
+		return fmt.Sprintf("addr:%s, readState nonce:%d, balance:%d, codeHash:%s, codeLen:%d, state:%v selfDestructed:%t, deleted:%t, created:%t ;  cacheState modified:%d, nonce:%d, balance:%d, codeHash:%s, codeLen:%d, state:%v, selfDestruct:%t, deleted:%t, created:%t \n",
+			addr.String(), read.nonce, read.balance, common.Bytes2Hex(read.codeHash), read.codeSize, read.state, read.selfDestruct, read.deleted, read.created,
+			write.modified, write.nonce, write.balance, common.Bytes2Hex(write.codeHash), write.codeSize, write.state, write.selfDestruct, write.deleted, write.created,
+		)
+	}
+}
+
 // ===============================================
 // Preimage Methods (EIP-1352: https://eips.ethereum.org/EIPS/eip-1352)
 func (pst *UncommittedDB) AddPreimage(hash common.Hash, preimage []byte) {
