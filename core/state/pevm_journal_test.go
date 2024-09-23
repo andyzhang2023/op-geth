@@ -8,6 +8,67 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
+func TestJournalOfState(t *testing.T) {
+	var snapid int
+	var (
+		Address1 = common.Address{0x01}
+		Address2 = common.Address{0x02}
+		Address3 = common.Address{0x03}
+		Address4 = common.Address{0x04}
+	)
+	prepare := Tx{
+		{"SetNonce", Address1, 1},
+		{"AddBalance", Address2, big.NewInt(100)},
+		{"SetState", Address3, "key", "value"},
+		{"SetCode", Address4, []byte{0x04}},
+	}
+	// set states that will be reverted
+	tx := Tx{
+		{"Snapshot", &snapid},
+		{"SetNonce", Address1, 2},
+		{"AddBalance", Address2, big.NewInt(100)},
+		{"SetState", Address3, "key", "value3"},
+		{"SetCode", Address4, []byte{0x040}},
+	}
+	revertTx := Tx{
+		{"Revert", &snapid},
+	}
+	beforeRevert := Checks{
+		{"nonce", Address1, 2},
+		{"balance", Address2, big.NewInt(200)},
+		{"state", Address3, "key", "value3"},
+		{"code", Address4, []byte{0x040}},
+	}
+	afterRevert := Checks{
+		{"nonce", Address1, 1},
+		{"balance", Address2, big.NewInt(100)},
+		{"state", Address3, "key", "value"},
+		{"code", Address4, []byte{0x04}},
+	}
+
+	statedb := newStateDB()
+	prepare.Call(statedb)
+	tx.Call(statedb)
+	if err := beforeRevert.Verify(statedb); err != nil {
+		t.Fatalf("[maindb]before revert: %v", err)
+	}
+	revertTx.Call(statedb)
+	if err := afterRevert.Verify(statedb); err != nil {
+		t.Fatalf("[maindb]after revert: %v", err)
+	}
+
+	uncommitted := NewUncommittedDB(newStateDB())
+	prepare.Call(uncommitted)
+	tx.Call(uncommitted)
+	if err := beforeRevert.Verify(uncommitted); err != nil {
+		t.Fatalf("[uncommitted]before revert: %v", err)
+	}
+	revertTx.Call(uncommitted)
+	if err := afterRevert.Verify(uncommitted); err != nil {
+		t.Fatalf("[uncommitted]after revert: %v", err)
+	}
+}
+
 func TestJournal(t *testing.T) {
 	var snapid int
 	var tx1 = common.Hash{0x012}
