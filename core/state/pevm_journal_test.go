@@ -93,6 +93,8 @@ func TestJournal(t *testing.T) {
 		{"AddRefund", 102},
 		{"AddLog", &types.Log{TxHash: tx1, Data: []byte("hello"), TxIndex: uint(txIndex)}},
 		{"AddLog", &types.Log{TxHash: tx1, Data: []byte("world"), TxIndex: uint(txIndex)}},
+		{"AddAddress", Address1},
+		{"AddSlots", Address2, common.Hash{0x22}},
 	}
 	revertTx := Tx{
 		{"Revert", &snapid},
@@ -109,6 +111,9 @@ func TestJournal(t *testing.T) {
 		{"log", tx1, 0, []byte("hello"), txIndex, 0},
 		{"log", tx1, 1, []byte("world"), txIndex, 1},
 		{"loglen", 2},
+		{"address", Address1, true},
+		{"address", Address2, true},
+		{"slot", Address2, common.Hash{0x22}, true},
 	}
 	afterRevert := Checks{
 		{"exists", Address1, false},
@@ -120,6 +125,9 @@ func TestJournal(t *testing.T) {
 		{"tstorage", Address6, "hash", ""},
 		{"refund", 0},
 		{"loglen", 0},
+		{"address", Address1, false},
+		{"address", Address2, false},
+		{"slot", Address2, common.Hash{0x22}, false},
 	}
 
 	statedb := newStateDB()

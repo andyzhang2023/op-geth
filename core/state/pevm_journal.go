@@ -249,9 +249,20 @@ func (j *jPreimage) revert(db *UncommittedDB) {
 }
 
 type jAccessList struct {
-	created bool
-	addr    common.Address
-	slot    common.Hash
+	addr *common.Address
+}
+
+func (j *jAccessList) revert(db *UncommittedDB) {
+	db.accessList.DeleteAddress(*j.addr)
+}
+
+type jAccessListSlot struct {
+	addr *common.Address
+	slot *common.Hash
+}
+
+func (j *jAccessListSlot) revert(db *UncommittedDB) {
+	db.accessList.DeleteSlot(*j.addr, *j.slot)
 }
 
 type jLog struct {
