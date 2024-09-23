@@ -19,11 +19,12 @@ package core
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/log"
 	"math"
 	"math/big"
 	"time"
+
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
@@ -38,11 +39,13 @@ var DebugInnerExecutionDuration time.Duration
 // ExecutionResult includes all output after executing given evm
 // message no matter the execution itself is successful or not.
 type ExecutionResult struct {
-	UsedGas     uint64 // Total used gas, not including the refunded gas
-	RefundedGas uint64 // Total gas refunded after execution
-	Err         error  // Any error encountered during the execution(listed in core/vm/errors.go)
-	ReturnData  []byte // Returned data from evm(function result or data supplied with revert opcode)
-	delayFees   *state.DelayedGasFee
+	InitialGas   uint64
+	RemainingGas uint64 // Remaining gas after execution
+	UsedGas      uint64 // Total used gas, not including the refunded gas
+	RefundedGas  uint64 // Total gas refunded after execution
+	Err          error  // Any error encountered during the execution(listed in core/vm/errors.go)
+	ReturnData   []byte // Returned data from evm(function result or data supplied with revert opcode)
+	delayFees    *state.DelayedGasFee
 }
 
 // Unwrap returns the internal evm error which allows us for further
@@ -611,10 +614,12 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		}
 	}
 	return &ExecutionResult{
-		UsedGas:     st.gasUsed(),
-		RefundedGas: gasRefund,
-		Err:         vmerr,
-		ReturnData:  ret,
+		InitialGas:   st.initialGas,
+		RemainingGas: st.gasRemaining,
+		UsedGas:      st.gasUsed(),
+		RefundedGas:  gasRefund,
+		Err:          vmerr,
+		ReturnData:   ret,
 		delayFees: &state.DelayedGasFee{
 			TipFee:   tipFee,
 			BaseFee:  baseFee,
