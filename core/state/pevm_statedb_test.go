@@ -906,50 +906,52 @@ func TestPevmAccessList(t *testing.T) {
 	//		check: address 1, slot 1, address 2, slot 2 are all in the accesslist
 	coinBase := common.BytesToAddress([]byte("0xcoinbase"))
 	sender := common.BytesToAddress([]byte("0xsender"))
+	key1 := common.Hash{0x33}
+	key2 := common.Hash{0x34}
 	prepare := Txs{
 		{
 			{"AddAddress", Address1},
-			{"AddSlots", Address1, common.BytesToHash([]byte("key1"))},
+			{"AddSlots", Address1, key1},
 		},
 	}
 	tx := Txs{
 		{
 			{"AddAddress", Address2},
-			{"AddSlots", Address2, common.BytesToHash([]byte("key2"))},
+			{"AddSlots", Address2, key2},
 		},
 	}
 	check := CheckState{
 		BeforeRun: uncommitedState{
 			Uncommited: []Check{
 				{"address", Address1, true},
-				{"slot", Address1, "key1", true},
+				{"slot", Address1, key1, true},
 			},
 			Maindb: []Check{
 				{"address", Address1, true},
-				{"slot", Address1, "key1", true},
+				{"slot", Address1, key1, true},
 			},
 		},
 		BeforeMerge: uncommitedState{
 			Uncommited: []Check{
 				{"address", Address1, true},
 				{"address", Address2, true},
-				{"slot", Address1, "key1", true},
-				{"slot", Address2, "key2", true},
+				{"slot", Address1, key1, true},
+				{"slot", Address2, key2, true},
 				{"address", sender, false},
 				{"address", coinBase, false},
 			},
 			Maindb: []Check{
 				{"address", Address1, true},
 				{"address", Address2, false},
-				{"slot", Address1, "key1", true},
-				{"slot", Address2, "key2", false},
+				{"slot", Address1, key1, true},
+				{"slot", Address2, key2, false},
 			},
 		},
 		AfterMerge: []Check{
 			{"address", Address1, true},
 			{"address", Address2, true},
-			{"slot", Address1, "key1", true},
-			{"slot", Address2, "key2", true},
+			{"slot", Address1, key1, true},
+			{"slot", Address2, key2, true},
 			{"address", sender, false},
 			{"address", coinBase, false},
 		},
@@ -981,7 +983,7 @@ func TestPevmAccessList(t *testing.T) {
 				{"address", sender, true},
 				{"address", coinBase, true},
 				{"address", Address1, false},
-				{"slot", Address1, "key1", false},
+				{"slot", Address1, key1, false},
 			},
 		},
 		BeforeMerge: uncommitedState{
@@ -990,8 +992,8 @@ func TestPevmAccessList(t *testing.T) {
 				{"address", coinBase, true},
 				{"address", Address1, false},
 				{"address", Address2, true},
-				{"slot", Address1, "key1", false},
-				{"slot", Address2, "key2", true},
+				{"slot", Address1, key1, false},
+				{"slot", Address2, key2, true},
 			},
 		},
 		AfterMerge: []Check{
@@ -999,8 +1001,8 @@ func TestPevmAccessList(t *testing.T) {
 			{"address", coinBase, true},
 			{"address", Address1, false},
 			{"address", Address2, true},
-			{"slot", Address1, "key1", false},
-			{"slot", Address2, "key2", true},
+			{"slot", Address1, key1, false},
+			{"slot", Address2, key2, true},
 		},
 	}
 	statedb, maindb = newStateDB(), newStateDB()
@@ -1242,7 +1244,7 @@ func (c Check) Verify(state vm.StateDB) error {
 
 	case "slot":
 		addr := c[1].(common.Address)
-		key := common.BytesToHash([]byte(c[2].(string)))
+		key := c[2].(common.Hash)
 		exists := c[3].(bool)
 		var accesslist *accessList
 		if db, ok := state.(*StateDB); ok {

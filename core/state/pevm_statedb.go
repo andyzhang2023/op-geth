@@ -329,10 +329,18 @@ func (pst *UncommittedDB) SlotInAccessList(addr common.Address, slot common.Hash
 	return pst.accessList.Contains(addr, slot)
 }
 func (pst *UncommittedDB) AddAddressToAccessList(addr common.Address) {
-	pst.accessList.AddAddress(addr)
+	if pst.accessList.AddAddress(addr) {
+		pst.journal.append(&jAccessList{addr: &addr})
+	}
 }
 func (pst *UncommittedDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {
-	pst.accessList.AddSlot(addr, slot)
+	addrChanged, slotChanged := pst.accessList.AddSlot(addr, slot)
+	if addrChanged {
+		pst.journal.append(&jAccessList{addr: &addr})
+	}
+	if slotChanged {
+		pst.journal.append(&jAccessListSlot{addr: &addr, slot: &slot})
+	}
 }
 
 // ===============================================
