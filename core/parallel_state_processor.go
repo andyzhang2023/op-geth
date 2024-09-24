@@ -667,7 +667,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		}
 	}
 
-	txLevels := NewTxLevels3(allTxsReq, runtimeDag)
+	txLevels := NewTxLevels2(allTxsReq, runtimeDag)
 	var executeFailed, confirmedFailed int32 = 0, 0
 	var executeDuration, confirmDuration, executeTimes, confirmTimes int64 = 0, 0, 0, 0
 
