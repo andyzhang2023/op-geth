@@ -707,8 +707,15 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		if ptr.msg.To != nil {
 			to = *ptr.msg.To
 		}
+		debugTrieAccount, debugTrieError := statedb.GetAccountFromTrie(ptr.msg.From)
+
 		if res.err != nil {
 			log.Error("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from", res.uncommited.Debug(ptr.msg.From), "to", res.uncommited.Debug(to))
+			if debugTrieAccount == nil {
+				log.Error("ProcessParallel execute tx debugger", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from", debugTrieAccount, "fromError", debugTrieError)
+			} else {
+				log.Error("ProcessParallel execute tx debugger", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from.nonce", debugTrieAccount.Nonce, "fromError", debugTrieError)
+			}
 			atomic.AddInt32(&executeFailed, 1)
 			atomic.AddInt32(&p.debugConflictRedoNum, 1)
 		}

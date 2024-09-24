@@ -365,6 +365,13 @@ func NewStateDBByTrie(tr Trie, db Database, snaps *snapshot.Tree) (*StateDB, err
 	return sdb, nil
 }
 
+func (s *StateDB) GetAccountFromTrie(addr common.Address) (*types.StateAccount, error) {
+	if s.trie == nil {
+		return nil, fmt.Errorf("trie is nil")
+	}
+	return s.trie.GetAccount(addr)
+}
+
 func (s *StateDB) IsParallel() bool {
 	return s.isParallel
 }
@@ -920,26 +927,7 @@ func (s *StateDB) getStateObjectFromSnapshotOrTrie(addr common.Address) (data *t
 	if data == nil {
 		s.trieParallelLock.Lock()
 		defer s.trieParallelLock.Unlock()
-		var trie Trie
-		if s.isParallel {
-			// hold lock for parallel
-			if s.parallel.isSlotDB {
-				if s.parallel.baseStateDB == nil {
-					return nil, false
-				} else {
-					tr, err := s.parallel.baseStateDB.db.OpenTrie(s.originalRoot)
-					if err != nil {
-						log.Error("Can not openTrie for parallel SlotDB\n")
-						return nil, false
-					}
-					trie = tr
-				}
-			} else {
-				trie = s.trie
-			}
-		} else {
-			trie = s.trie
-		}
+		var trie Trie = s.trie
 
 		start := time.Now()
 		var err error
