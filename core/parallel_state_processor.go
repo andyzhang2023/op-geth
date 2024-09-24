@@ -775,7 +775,13 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	p.engine.Finalize(p.bc, header, statedb, commonTxs, block.Uncles(), withdrawals)
 
 	var allLogs []*types.Log
+	var lindex = 0
 	for _, receipt := range receipts {
+		// reset the log index
+		for _, log := range receipt.Logs {
+			log.Index = uint(lindex)
+			lindex++
+		}
 		allLogs = append(allLogs, receipt.Logs...)
 	}
 	return receipts, allLogs, *usedGas, nil
