@@ -671,6 +671,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	var executeDuration, confirmDuration, executeTimes, confirmTimes int64 = 0, 0, 0, 0
 
 	// wait until all Txs have processed.
+	receipts = make(types.Receipts, txNum)
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&executeDuration, int64(time.Since(t0)))
@@ -729,7 +730,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 				return fmt.Errorf("confirmed failed, txIndex:%d, err:%s", result.txReq.txIndex, result.err)
 			}
 			commonTxs = append(commonTxs, result.txReq.tx)
-			receipts = append(receipts, result.receipt)
+			receipts[result.txReq.txIndex] = result.receipt
 			return nil
 		})
 	log.Info("ProcessParallel execute block done", "usedGas", *usedGas, "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil, "executeDuration", executeDuration, "executeTimes", executeTimes, "confirmDuration", time.Duration(confirmDuration), "confirmTimes", confirmTimes)
