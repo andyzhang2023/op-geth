@@ -662,9 +662,9 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 		// set deposit txs as execlutded
 		runtimeDag.SetTxDep(0, types.TxDep{TxIndexes: nil, Flags: &types.ExcludedTxFlag})
 		// calculate the txDAG of other transactions
-		if len(allTxsReq) > 1 {
-			TxLevel(allTxsReq[1:]).predictTxDAG(runtimeDag)
-		}
+		//if len(allTxsReq) > 1 {
+		//	TxLevel(allTxsReq[1:]).predictTxDAG(runtimeDag)
+		//}
 	}
 
 	txLevels := NewTxLevels2(allTxsReq, runtimeDag)
