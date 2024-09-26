@@ -496,7 +496,6 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	}
 	// calculate the gasUsed
 	*gasUsed = *gasUsed + result.receipt.GasUsed
-	result.receipt.CumulativeGasUsed = *gasUsed
 	log.Debug("parallel: confirmResult() gas used in tx", "block.gasLimit", result.txReq.block.GasLimit(), "block.number", result.txReq.block.Number(), "tx.index", result.txReq.txIndex, "tx.Hash", result.txReq.tx.Hash().String(), "tx.gasUsed", result.receipt.GasUsed, "tx.gas", result.txReq.tx.Gas(), "txmsg.gasLimit", result.txReq.msg.GasLimit, "totalGasUsed", *gasUsed)
 
 	var root []byte
@@ -730,6 +729,8 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 				return fmt.Errorf("confirmed failed, txIndex:%d, err:%s", result.txReq.txIndex, result.err)
 			}
 			commonTxs = append(commonTxs, result.txReq.tx)
+			result.receipt.BlockHash = header.Hash()
+			result.receipt.TransactionIndex = uint(result.txReq.txIndex)
 			receipts[result.txReq.txIndex] = result.receipt
 			return nil
 		})
@@ -776,12 +777,16 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 
 	var allLogs []*types.Log
 	var lindex = 0
+	var culmulativeGasUsed uint64
 	for _, receipt := range receipts {
 		// reset the log index
 		for _, log := range receipt.Logs {
 			log.Index = uint(lindex)
 			lindex++
 		}
+		// re-culculate the culmulativeGasUsed
+		culmulativeGasUsed += receipt.GasUsed
+		receipt.CumulativeGasUsed = culmulativeGasUsed
 		allLogs = append(allLogs, receipt.Logs...)
 	}
 	return receipts, allLogs, *usedGas, nil
