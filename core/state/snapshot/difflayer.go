@@ -336,7 +336,8 @@ func (dl *diffLayer) accountRLP(hash common.Hash, depth int) ([]byte, error) {
 	// If the account is known locally, return it
 	if data, ok := dl.accountData[hash]; ok {
 		snapshotDirtyAccountHitMeter.Mark(1)
-		snapshotDirtyAccountHitDepthHist.Update(int64(depth))
+		// debug: need to add back after debugging finished
+		//snapshotDirtyAccountHitDepthHist.Update(int64(depth))
 		snapshotDirtyAccountReadMeter.Mark(int64(len(data)))
 		snapshotBloomAccountTrueHitMeter.Mark(1)
 		return data, nil
@@ -344,7 +345,8 @@ func (dl *diffLayer) accountRLP(hash common.Hash, depth int) ([]byte, error) {
 	// If the account is known locally, but deleted, return it
 	if _, ok := dl.destructSet[hash]; ok {
 		snapshotDirtyAccountHitMeter.Mark(1)
-		snapshotDirtyAccountHitDepthHist.Update(int64(depth))
+		// debug: need to add back after debugging finished
+		//snapshotDirtyAccountHitDepthHist.Update(int64(depth))
 		snapshotDirtyAccountInexMeter.Mark(1)
 		snapshotBloomAccountTrueHitMeter.Mark(1)
 		return nil, nil
