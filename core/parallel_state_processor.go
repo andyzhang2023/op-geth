@@ -496,7 +496,6 @@ func (p *ParallelStateProcessor) confirmTxResults(result *ParallelTxResult, stat
 	}
 	// calculate the gasUsed
 	*gasUsed = *gasUsed + result.receipt.GasUsed
-	result.receipt.CumulativeGasUsed = *gasUsed
 	log.Debug("parallel: confirmResult() gas used in tx", "block.gasLimit", result.txReq.block.GasLimit(), "block.number", result.txReq.block.Number(), "tx.index", result.txReq.txIndex, "tx.Hash", result.txReq.tx.Hash().String(), "tx.gasUsed", result.receipt.GasUsed, "tx.gas", result.txReq.tx.Gas(), "txmsg.gasLimit", result.txReq.msg.GasLimit, "totalGasUsed", *gasUsed)
 
 	var root []byte
@@ -671,6 +670,7 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	var executeDuration, confirmDuration, executeTimes, confirmTimes int64 = 0, 0, 0, 0
 
 	// wait until all Txs have processed.
+	receipts = make(types.Receipts, txNum)
 	err, txIndex := txLevels.Run(func(ptr *ParallelTxRequest) *ParallelTxResult {
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&executeDuration, int64(time.Since(t0)))
@@ -729,7 +729,9 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 				return fmt.Errorf("confirmed failed, txIndex:%d, err:%s", result.txReq.txIndex, result.err)
 			}
 			commonTxs = append(commonTxs, result.txReq.tx)
-			receipts = append(receipts, result.receipt)
+			result.receipt.BlockHash = header.Hash()
+			result.receipt.TransactionIndex = uint(result.txReq.txIndex)
+			receipts[result.txReq.txIndex] = result.receipt
 			return nil
 		})
 	log.Info("ProcessParallel execute block done", "usedGas", *usedGas, "parallel", cap(runner), "block", header.Number, "levels", len(txLevels), "txs", len(allTxsReq), "duration", time.Since(starttime), "executeFailed", executeFailed, "confirmFailed", confirmedFailed, "txDAG", txDAG != nil, "executeDuration", executeDuration, "executeTimes", executeTimes, "confirmDuration", time.Duration(confirmDuration), "confirmTimes", confirmTimes)
@@ -774,7 +776,17 @@ func (p *ParallelStateProcessor) Process(block *types.Block, statedb *state.Stat
 	p.engine.Finalize(p.bc, header, statedb, commonTxs, block.Uncles(), withdrawals)
 
 	var allLogs []*types.Log
+	var lindex = 0
+	var culmulativeGasUsed uint64
 	for _, receipt := range receipts {
+		// reset the log index
+		for _, log := range receipt.Logs {
+			log.Index = uint(lindex)
+			lindex++
+		}
+		// re-culculate the culmulativeGasUsed
+		culmulativeGasUsed += receipt.GasUsed
+		receipt.CumulativeGasUsed = culmulativeGasUsed
 		allLogs = append(allLogs, receipt.Logs...)
 	}
 	return receipts, allLogs, *usedGas, nil
