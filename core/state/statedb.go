@@ -2665,6 +2665,8 @@ func (s *StateDB) MergeSlotDB(slotDb *ParallelStateDB, slotReceipt *types.Receip
 }
 
 func (s *StateDB) GetAccountFromTrie(addr common.Address) (*types.StateAccount, error) {
+	s.trieParallelLock.Lock()
+	defer s.trieParallelLock.Unlock()
 	if s.trie == nil {
 		return nil, fmt.Errorf("trie is nil")
 	}
