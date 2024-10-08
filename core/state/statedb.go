@@ -2664,6 +2664,13 @@ func (s *StateDB) MergeSlotDB(slotDb *ParallelStateDB, slotReceipt *types.Receip
 	return s
 }
 
+func (s *StateDB) GetAccountFromTrie(addr common.Address) (*types.StateAccount, error) {
+	if s.trie == nil {
+		return nil, fmt.Errorf("trie is nil")
+	}
+	return s.trie.GetAccount(addr)
+}
+
 // NewParallelDBManager creates a new ParallelDBManager with the specified number of instance
 func NewParallelDBManager(initialCount int, newFunc func() *ParallelStateDB) *ParallelDBManager {
 	manager := &ParallelDBManager{

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ethereum/go-ethereum/consensus"
@@ -256,16 +257,41 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 	buildLevelsDuration := time.Since(start)
 	var executeDurations, confirmDurations int64 = 0, 0
 	err, txIndex := txLevels.Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
+		// first build the message, to get the From address
+		if err := buildMessage(pr, signer, header); err != nil {
+			return &PEVMTxResult{txReq: pr, err: err}
+		}
+		// prepare some debug info
+		debugTrieAccount, debugTrieError := statedb.GetAccountFromTrie(pr.msg.From)
+		ptr := pr
+		to := common.Address{}
+		if pr.msg.To != nil {
+			to = *pr.msg.To
+		}
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&executeDurations, time.Since(t0).Nanoseconds())
 			if res.err != nil {
 				atomic.AddUint64(&p.debugConflictRedoNum, 1)
+				log.Error("ProcessParallel execute tx failed", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from", res.slotDB.Debug(ptr.msg.From), "to", res.slotDB.Debug(to))
+				if debugTrieAccount == nil {
+					log.Error("ProcessParallel execute tx debugger", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from", debugTrieAccount, "fromError", debugTrieError)
+				} else {
+					log.Error("ProcessParallel execute tx debugger", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from.nonce", debugTrieAccount.Nonce, "fromError", debugTrieError)
+				}
+			}
+			// record the vmerr, because it is uncommon and should be recorded for further analysis
+			if res.result != nil && res.result.Err != nil {
+				log.Info("ProcessParallel evm execute tx failed",
+					"block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(),
+					"isDeposit", ptr.msg.IsDepositTx, "vmerr", res.result.Err.Error(), "err", res.err,
+					"from", res.slotDB.Debug(ptr.msg.From), "to", res.slotDB.Debug(to),
+					"gasUsed", res.result.UsedGas, "gasLimit", ptr.tx.Gas(), "msgGasLimit", ptr.msg.GasLimit,
+					"gasRefunded", res.result.RefundedGas,
+				)
 			}
 		}(time.Now())
 
-		if err := buildMessage(pr, signer, header); err != nil {
-			return &PEVMTxResult{txReq: pr, err: err}
-		}
+		// now we execute the tx in evm
 		return p.executeInSlot(statedb, pr)
 	}, func(pr *PEVMTxResult) (err error) {
 		defer func(t0 time.Time) {
