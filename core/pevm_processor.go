@@ -280,7 +280,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 				}
 				debugInfo := statedb.PopDebugInfo()
 				for i := 0; i < len(debugInfo); i++ {
-					log.Error("ProcessParallel statedb debug info", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "debug", debugInfo[i])
+					log.Error("ProcessParallel statedb debug info", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "statedbErr", statedb.Error(), "debug", debugInfo[i])
 				}
 			}
 			// record the vmerr, because it is uncommon and should be recorded for further analysis
