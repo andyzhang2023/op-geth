@@ -740,7 +740,7 @@ func (s *state) markAllModified() {
 // check whether the state of current object is conflicted with the maindb
 func (s state) conflicts(maindb *StateDB) error {
 	addr := s.addr
-	obj := maindb.getDeletedStateObject(addr)
+	obj := maindb.getDeletedStateObjectNoUpdate(addr)
 	// created == true means it doen't exist in the maindb
 	if s.created != (obj == nil) {
 		return errors.New("conflict: created")

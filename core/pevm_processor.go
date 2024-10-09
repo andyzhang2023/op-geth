@@ -256,7 +256,9 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 	txLevels := NewTxLevels(p.allTxReqs, txDAG)
 	buildLevelsDuration := time.Since(start)
 	var executeDurations, confirmDurations int64 = 0, 0
+	var executeCount, confirmCount int32 = 0, 0
 	err, txIndex := txLevels.Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
+		atomic.AddInt32(&executeCount, 1)
 		// first build the message, to get the From address
 		if err := buildMessage(pr, signer, header); err != nil {
 			return &PEVMTxResult{txReq: pr, err: err}
@@ -285,7 +287,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 			}
 			// record the vmerr, because it is uncommon and should be recorded for further analysis
 			if res.result != nil && res.result.Err != nil {
-				log.Info("ProcessParallel evm execute tx failed",
+				log.Debug("ProcessParallel evm execute tx failed",
 					"block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(),
 					"isDeposit", ptr.msg.IsDepositTx, "vmerr", res.result.Err.Error(), "err", res.err,
 					"from", res.slotDB.Debug(ptr.msg.From), "to", res.slotDB.Debug(to),
@@ -298,6 +300,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 		// now we execute the tx in evm
 		return p.executeInSlot(statedb, pr)
 	}, func(pr *PEVMTxResult) (err error) {
+		atomic.AddInt32(&confirmCount, 1)
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&confirmDurations, time.Since(t0).Nanoseconds())
 			if err != nil {
@@ -333,6 +336,8 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 		"parallelRunDuration", parallelRunDuration,
 		"executeDurations", time.Duration(executeDurations),
 		"confirmDurations", time.Duration(confirmDurations),
+		"executeCount", executeCount,
+		"confirmCount", confirmCount,
 		"txNum", txNum,
 		"len(commonTxs)", len(p.commonTxs),
 		"conflictNum", p.debugConflictRedoNum,
