@@ -278,6 +278,10 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 				} else {
 					log.Error("ProcessParallel execute tx debugger", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "isDeposit", ptr.msg.IsDepositTx, "err", res.err, "from.nonce", debugTrieAccount.Nonce, "fromError", debugTrieError)
 				}
+				debugInfo := statedb.PopDebugInfo()
+				for i := 0; i < len(debugInfo); i++ {
+					log.Error("ProcessParallel statedb debug info", "block", header.Number, "txIndex", ptr.txIndex, "txHash", ptr.tx.Hash().String(), "debug", debugInfo[i])
+				}
 			}
 			// record the vmerr, because it is uncommon and should be recorded for further analysis
 			if res.result != nil && res.result.Err != nil {
@@ -308,6 +312,8 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 		log.Error("ProcessParallel tx failed", "txIndex", txIndex, "txHash", tx.Hash().Hex(), "err", err)
 		return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", txIndex, tx.Hash().Hex(), err)
 	}
+
+	statedb.PopDebugInfo()
 
 	//fmt.Printf("ProcessParallel tx all done, parallelNum:%d, txNum: %d, conflictNum: %d, executeDuration:%s, confirmDurations:%s, buildLevelsDuration:%s, runDuration:%s\n",
 	//	ParallelNum(), txNum, p.debugConflictRedoNum, time.Duration(executeDurations), time.Duration(confirmDurations), buildLevelsDuration, parallelRunDuration)

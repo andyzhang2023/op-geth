@@ -177,7 +177,18 @@ type ParallelState struct {
 // trie, storage tries) will no longer be functional. A new state instance
 // must be created with new root and updated database for accessing post-
 // commit states.
+type debugInfo struct {
+	addr    common.Address
+	snapNil bool
+	snapErr error
+	trieNil bool
+	trieErr error
+}
+
 type StateDB struct {
+	debuggerLock sync.Mutex
+	debugger     []*debugInfo
+
 	db         Database
 	prefetcher *triePrefetcher
 	trie       Trie
@@ -873,11 +884,44 @@ func (s *StateDB) SetTrie(trie Trie) {
 	s.trie = trie
 }
 
+func (s *StateDB) collectTrieDebug(addr common.Address, trieNil bool, trieErr error) {
+	s.debuggerLock.Lock()
+	defer s.debuggerLock.Unlock()
+	s.debugger = append(s.debugger, &debugInfo{
+		addr:    addr,
+		trieNil: trieNil,
+		trieErr: trieErr})
+}
+
+func (s *StateDB) collectSnapDebug(addr common.Address, snapNil bool, snapErr error) {
+	s.debuggerLock.Lock()
+	defer s.debuggerLock.Unlock()
+	s.debugger = append(s.debugger, &debugInfo{
+		addr:    addr,
+		snapNil: snapNil,
+		snapErr: snapErr,
+	})
+}
+
+func (s *StateDB) PopDebugInfo() []string {
+	s.debuggerLock.Lock()
+	defer s.debuggerLock.Unlock()
+	info := make([]string, 0, len(s.debugger))
+	for i := 0; i < len(s.debugger); i++ {
+		info = append(info, fmt.Sprintf("addr: %x, snapNil: %t, snapErr: %v, trieNil: %t, trieErr: %v",
+			s.debugger[i].addr, s.debugger[i].snapNil, s.debugger[i].snapErr, s.debugger[i].trieNil, s.debugger[i].trieErr))
+	}
+	// clean up
+	s.debugger = nil
+	return info
+}
+
 func (s *StateDB) getStateObjectFromSnapshotOrTrie(addr common.Address) (data *types.StateAccount, ok bool) {
 	// If no live objects are available, attempt to use snapshots
 	if s.snap != nil {
 		start := time.Now()
 		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+		s.collectSnapDebug(addr, acc == nil, err)
 		if metrics.EnabledExpensive {
 			s.SnapshotAccountReads += time.Since(start)
 		}
@@ -929,6 +973,7 @@ func (s *StateDB) getStateObjectFromSnapshotOrTrie(addr common.Address) (data *t
 		start := time.Now()
 		var err error
 		data, err = trie.GetAccount(addr)
+		s.collectTrieDebug(addr, data == nil, err)
 		if metrics.EnabledExpensive {
 			s.AccountReads += time.Since(start)
 		}
