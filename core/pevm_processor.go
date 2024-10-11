@@ -121,7 +121,6 @@ func (p *PEVMProcessor) executeInSlot(maindb *state.StateDB, txReq *PEVMTxReques
 func (p *PEVMProcessor) toConfirmTxIndexResult(txResult *PEVMTxResult) error {
 	txReq := txResult.txReq
 	if err := p.hasConflict(txResult); err != nil {
-		log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
 		return err
 	}
 
@@ -251,11 +250,13 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 	}
 
 	// parallel execution
+	var executeCount, confirmCount int32 = 0, 0
 	start := time.Now()
 	txLevels := NewTxLevels(p.allTxReqs, txDAG)
 	buildLevelsDuration := time.Since(start)
 	var executeDurations, confirmDurations int64 = 0, 0
 	err, txIndex := txLevels.Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
+		atomic.AddInt32(&executeCount, 1)
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&executeDurations, time.Since(t0).Nanoseconds())
 			if res.err != nil {
@@ -268,6 +269,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 		}
 		return p.executeInSlot(statedb, pr)
 	}, func(pr *PEVMTxResult) (err error) {
+		atomic.AddInt32(&confirmCount, 1)
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&confirmDurations, time.Since(t0).Nanoseconds())
 			if err != nil {
@@ -293,6 +295,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 	} else {
 		redoRate = 100 * (int(p.debugConflictRedoNum)) / len(p.commonTxs)
 	}
+	pevmTxLevels.Update(int64(len(txLevels)))
 	pevmBuildLevelsTimer.Update(buildLevelsDuration)
 	pevmRunTimer.Update(parallelRunDuration)
 	log.Info("ProcessParallel tx all done", "block", header.Number, "usedGas", *usedGas,
@@ -301,6 +304,9 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 		"parallelRunDuration", parallelRunDuration,
 		"executeDurations", time.Duration(executeDurations),
 		"confirmDurations", time.Duration(confirmDurations),
+		"executeCount", executeCount,
+		"confirmCount", confirmCount,
+		"txLevels", len(txLevels),
 		"txNum", txNum,
 		"len(commonTxs)", len(p.commonTxs),
 		"conflictNum", p.debugConflictRedoNum,

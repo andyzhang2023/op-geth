@@ -106,6 +106,7 @@ var (
 
 	pevmBuildLevelsTimer = metrics.NewRegisteredTimer("chain/pevm/buildlevels", nil)
 	pevmRunTimer         = metrics.NewRegisteredTimer("chain/pevm/run", nil)
+	pevmTxLevels         = metrics.NewRegisteredGauge("chain/pevm/txlevels", nil)
 
 	blockReorgMeter     = metrics.NewRegisteredMeter("chain/reorg/executes", nil)
 	blockReorgAddMeter  = metrics.NewRegisteredMeter("chain/reorg/add", nil)
