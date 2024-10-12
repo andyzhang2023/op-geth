@@ -17,6 +17,8 @@
 package vm
 
 import (
+	"fmt"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -199,6 +201,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		} else if sLen > operation.maxStack {
 			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
 		}
+		fmt.Printf("[DEBUG invalid gas used] from:%s, to:%s, op:%s, cost:%d\n", contract.caller.Address(), contract.self.Address(), op.String(), cost)
 		if !contract.UseGas(cost) {
 			return nil, ErrOutOfGas
 		}
