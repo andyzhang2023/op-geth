@@ -109,6 +109,8 @@ func NewEVMInterpreter(evm *EVM) *EVMInterpreter {
 	return &EVMInterpreter{evm: evm, table: table}
 }
 
+var DebugOpCode bool = false
+
 // Run loops and evaluates the contract's code with the given input data and returns
 // the return byte-slice and an error if one occurred.
 //
@@ -190,7 +192,9 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		op = contract.GetOp(pc)
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
-		fmt.Printf("[DEBUG invalid gas used] from:%s, to:%s, op:%s, cost:%d\n", contract.caller.Address(), contract.self.Address(), op.String(), cost)
+		if DebugOpCode {
+			fmt.Printf("[DEBUG invalid gas used, original] from:%s, to:%s, op:%s, cost:%d\n", contract.caller.Address(), contract.self.Address(), op.String(), cost)
+		}
 		// Validate stack
 		if sLen := stack.len(); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}

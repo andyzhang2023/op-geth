@@ -164,11 +164,11 @@ func (v *BlockValidator) ValidateBody(block *types.Block) error {
 func debugGsSummary(gasSummaries map[int]*state.GasSummary, block *types.Block) {
 	for txIndex, s := range gasSummaries {
 		if s == nil {
-			log.Error("[DEBUG invalid gas used], gs is nil", "blockNumber", block.NumberU64(), "txIndex", txIndex)
-			fmt.Printf("[DEBUG invalid gas used], block:%d, txIndex:%d, is nil\n", block.NumberU64(), txIndex)
+			log.Error("[DEBUG invalid gas used, original], gs is nil", "blockNumber", block.NumberU64(), "txIndex", txIndex)
+			fmt.Printf("[DEBUG invalid gas used, original], block:%d, txIndex:%d, is nil\n", block.NumberU64(), txIndex)
 		} else {
-			log.Error("[DEBUG invalid gas used], gs collected", "blockNumber", block.NumberU64(), "txIndex", txIndex, "gasSummary", s.Debug())
-			fmt.Printf("[DEBUG invalid gas used], block:%d, txIndex:%d, gasSummary:%s\n", block.NumberU64(), txIndex, s.Debug())
+			log.Error("[DEBUG invalid gas used, original], gs collected", "blockNumber", block.NumberU64(), "txIndex", txIndex, "gasSummary", s.Debug())
+			fmt.Printf("[DEBUG invalid gas used, original], block:%d, txIndex:%d, gasSummary:%s\n", block.NumberU64(), txIndex, s.Debug())
 		}
 	}
 }
@@ -178,9 +178,9 @@ func debugGsSummary(gasSummaries map[int]*state.GasSummary, block *types.Block) 
 func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateDB, receipts types.Receipts, usedGas uint64) error {
 	header := block.Header()
 	gasSummaries := statedb.PopGasSummaries()
-	debugGsSummary(gasSummaries, block)
+	//debugGsSummary(gasSummaries, block)
 	if block.GasUsed() != usedGas {
-		//debugGsSummary(gasSummaries, block)
+		debugGsSummary(gasSummaries, block)
 		return fmt.Errorf("invalid gas used (remote: %d local: %d)", block.GasUsed(), usedGas)
 	}
 
