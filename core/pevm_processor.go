@@ -275,6 +275,11 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 			if err != nil {
 				atomic.AddUint64(&p.debugConflictRedoNum, 1)
 			}
+			// collect debug info
+			if pr.result.GasSummary != nil {
+				pr.result.GasSummary.TxHash = pr.txReq.tx.Hash()
+			}
+			statedb.CollectGasSummary(pr.txReq.txIndex, pr.result.GasSummary)
 		}(time.Now())
 		return p.confirmTxResult(statedb, gp, pr)
 	})

@@ -155,7 +155,7 @@ func InsertChain(bc *BlockChain, blocks []*types.Block) error {
 }
 
 func BenchmarkAkaka(b *testing.B) {
-	addrNum := 10000
+	addrNum := 1000
 	// Configure and generate a sample block chain
 	funds := big.NewInt(1000000000000000)
 	addresses := generateAddress(addrNum)
@@ -174,7 +174,7 @@ func BenchmarkAkaka(b *testing.B) {
 		signer = types.LatestSigner(gspec.Config)
 	)
 
-	_, blocks, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), 2, func(i int, block *BlockGen) {
+	_, blocks, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), 20, func(i int, block *BlockGen) {
 		block.SetCoinbase(common.Address{0x00})
 		txs := make([]*types.Transaction, len(addresses))
 		for i, addr := range addresses {

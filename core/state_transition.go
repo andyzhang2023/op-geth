@@ -18,11 +18,12 @@ package core
 
 import (
 	"fmt"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/log"
 	"math"
 	"math/big"
 	"time"
+
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
@@ -44,6 +45,7 @@ type ExecutionResult struct {
 	Err         error  // Any error encountered during the execution(listed in core/vm/errors.go)
 	ReturnData  []byte // Returned data from evm(function result or data supplied with revert opcode)
 	delayFees   *state.DelayedGasFee
+	GasSummary  *state.GasSummary
 }
 
 // Unwrap returns the internal evm error which allows us for further
@@ -74,7 +76,7 @@ func (result *ExecutionResult) Revert() []byte {
 }
 
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
-func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation bool, isHomestead, isEIP2028, isEIP3860 bool) (uint64, error) {
+func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation bool, isHomestead, isEIP2028, isEIP3860 bool, gs *state.GasSummary) (uint64, error) {
 	// Set the starting gas for the raw transaction
 	var gas uint64
 	if isContractCreation && isHomestead {
@@ -82,6 +84,7 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 	} else {
 		gas = params.TxGas
 	}
+	gs.IntrinsicGas.BasicGas = gas
 	dataLen := uint64(len(data))
 	// Bump the required gas by the amount of transactional data
 	if dataLen > 0 {
@@ -101,12 +104,14 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 			return 0, ErrGasUintOverflow
 		}
 		gas += nz * nonZeroGas
+		gs.IntrinsicGas.InputGas.NonZeroGas = nz * nonZeroGas
 
 		z := dataLen - nz
 		if (math.MaxUint64-gas)/params.TxDataZeroGas < z {
 			return 0, ErrGasUintOverflow
 		}
 		gas += z * params.TxDataZeroGas
+		gs.IntrinsicGas.InputGas.ZeroGas = z * params.TxDataZeroGas
 
 		if isContractCreation && isEIP3860 {
 			lenWords := toWordSize(dataLen)
@@ -114,11 +119,14 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 				return 0, ErrGasUintOverflow
 			}
 			gas += lenWords * params.InitCodeWordGas
+			gs.IntrinsicGas.InputGas.InitCodeGas = lenWords * params.InitCodeWordGas
 		}
 	}
 	if accessList != nil {
 		gas += uint64(len(accessList)) * params.TxAccessListAddressGas
+		gs.IntrinsicGas.AccessListGas.AccessListGas = uint64(len(accessList)) * params.TxAccessListAddressGas
 		gas += uint64(accessList.StorageKeys()) * params.TxAccessListStorageKeyGas
+		gs.IntrinsicGas.AccessListGas.StorageKeyGas = uint64(accessList.StorageKeys()) * params.TxAccessListStorageKeyGas
 	}
 	return gas, nil
 }
@@ -498,10 +506,12 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		sender           = vm.AccountRef(msg.From)
 		rules            = st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil, st.evm.Context.Time)
 		contractCreation = msg.To == nil
+		gs               = &state.GasSummary{}
 	)
+	gs.GasLimit = msg.GasLimit
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
-	gas, err := IntrinsicGas(msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	gas, err := IntrinsicGas(msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, gs)
 	if err != nil {
 		return nil, err
 	}
@@ -534,6 +544,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
 	)
 	start := time.Now()
+	gs.EvmCallGas = st.gasRemaining
 	if contractCreation {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(sender, msg.Data, st.gasRemaining, value)
 	} else {
@@ -541,6 +552,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, value)
 	}
+	gs.EvmCallGas = gs.EvmCallGas - st.gasRemaining
 	DebugInnerExecutionDuration += time.Since(start)
 
 	// stop record rw set in here, skip gas fee distribution
@@ -561,12 +573,16 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			UsedGas:    gasUsed,
 			Err:        vmerr,
 			ReturnData: ret,
+			GasSummary: gs,
 		}, nil
 	}
 	// Note for deposit tx there is no ETH refunded for unused gas, but that's taken care of by the fact that gasPrice
 	// is always 0 for deposit tx. So calling refundGas will ensure the gasUsed accounting is correct without actually
 	// changing the sender's balance
 	var gasRefund uint64
+	gs.Refunds.IsLondon = rules.IsLondon
+	gs.Refunds.GasUsed = st.gasUsed()
+	gs.Refunds.StateRefunds = st.state.GetRefund()
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
 		gasRefund = st.refundGas(params.RefundQuotient)
@@ -574,6 +590,8 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		// After EIP-3529: refunds are capped to gasUsed / 5
 		gasRefund = st.refundGas(params.RefundQuotientEIP3529)
 	}
+	gs.Refunds.Refunds = gasRefund
+	gs.GasUsed = st.gasUsed()
 	if st.msg.IsDepositTx && rules.IsOptimismRegolith {
 		// Skip coinbase payments for deposit tx in Regolith
 		return &ExecutionResult{
@@ -581,6 +599,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			RefundedGas: gasRefund,
 			Err:         vmerr,
 			ReturnData:  ret,
+			GasSummary:  gs,
 		}, nil
 	}
 
@@ -641,6 +660,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			}
 		}
 	}
+	gs.GasUsed = st.gasUsed()
 	return &ExecutionResult{
 		UsedGas:     st.gasUsed(),
 		RefundedGas: gasRefund,
@@ -652,6 +672,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			L1Fee:    l1Fee,
 			Coinbase: st.evm.Context.Coinbase,
 		},
+		GasSummary: gs,
 	}, nil
 }
 

@@ -178,14 +178,15 @@ type ParallelState struct {
 // must be created with new root and updated database for accessing post-
 // commit states.
 type StateDB struct {
-	db         Database
-	prefetcher *triePrefetcher
-	trie       Trie
-	noTrie     bool
-	hasher     crypto.KeccakState
-	hasherLock sync.Mutex
-	snaps      *snapshot.Tree    // Nil if snapshot is not available
-	snap       snapshot.Snapshot // Nil if snapshot is not available
+	gasSummaries map[int]*GasSummary
+	db           Database
+	prefetcher   *triePrefetcher
+	trie         Trie
+	noTrie       bool
+	hasher       crypto.KeccakState
+	hasherLock   sync.Mutex
+	snaps        *snapshot.Tree    // Nil if snapshot is not available
+	snap         snapshot.Snapshot // Nil if snapshot is not available
 
 	snapParallelLock        sync.RWMutex // for parallel mode, for main StateDB, slot will read snapshot, while processor will write.
 	trieParallelLock        sync.Mutex   // for parallel mode of trie, mostly for get states/objects from trie, lock required to handle trie tracer.
@@ -403,6 +404,25 @@ func (s *StateDB) StopPrefetcher() {
 // Mark that the block is full processed
 func (s *StateDB) MarkFullProcessed() {
 	s.fullProcessed = true
+}
+
+// debug gas
+func (s *StateDB) CollectGasSummary(txIndex int, gs *GasSummary) {
+	if s.gasSummaries == nil {
+		s.gasSummaries = make(map[int]*GasSummary)
+	}
+	s.gasSummaries[txIndex] = gs
+}
+
+func (s *StateDB) PopGasSummaries() map[int]*GasSummary {
+	defer func() {
+		s.gasSummaries = nil
+	}()
+	gs := s.gasSummaries
+	if gs == nil {
+		gs = make(map[int]*GasSummary)
+	}
+	return gs
 }
 
 // setError remembers the first non-nil error it is called with.
