@@ -1897,7 +1897,9 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 
 			// Process block using the parent state as reference point
 			pstart = time.Now()
+			fmt.Printf("[DEBUG invalid gas used] start block %d, gas used %d\n", block.NumberU64(), block.GasUsed())
 			receipts, logs, usedGas, err = bc.processor.Process(block, statedb, bc.vmConfig)
+			fmt.Printf("[DEBUG invalid gas used] end block %d, gas used %d\n", block.NumberU64(), usedGas)
 			if err != nil {
 				bc.reportBlock(block, receipts, err)
 				followupInterrupt.Store(true)

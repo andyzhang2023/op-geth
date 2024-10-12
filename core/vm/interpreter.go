@@ -17,6 +17,8 @@
 package vm
 
 import (
+	"fmt"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -188,6 +190,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		op = contract.GetOp(pc)
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
+		fmt.Printf("[DEBUG invalid gas used] from:%s, to:%s, op:%s, cost:%d\n", contract.caller.Address(), contract.self.Address(), op.String(), cost)
 		// Validate stack
 		if sLen := stack.len(); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}

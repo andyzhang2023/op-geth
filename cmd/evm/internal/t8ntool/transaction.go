@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -134,7 +135,7 @@ func Transaction(ctx *cli.Context) error {
 		}
 		// Check intrinsic gas
 		if gas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.To() == nil,
-			chainConfig.IsHomestead(new(big.Int)), chainConfig.IsIstanbul(new(big.Int)), chainConfig.IsShanghai(new(big.Int), 0)); err != nil {
+			chainConfig.IsHomestead(new(big.Int)), chainConfig.IsIstanbul(new(big.Int)), chainConfig.IsShanghai(new(big.Int), 0), &state.GasSummary{}); err != nil {
 			r.Error = err
 			results = append(results, r)
 			continue
