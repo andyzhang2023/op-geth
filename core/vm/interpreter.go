@@ -21,7 +21,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -36,12 +35,8 @@ type Config struct {
 	NoBaseFee                   bool                // Forces the EIP-1559 baseFee to 0 (needed for 0 price calls)
 	EnablePreimageRecording     bool                // Enables recording of SHA3/keccak preimages
 	ExtraEips                   []int               // Additional EIPS that are to be enabled
-	EnableParallelExec          bool                // Whether to execute transaction in parallel mode when do full sync
-	EnableParallelExecV2        bool                // Whether to execute transaction in parallel mode when do full sync
-	ParallelTxNum               int                 // Number of slot for transaction execution
 	OptimismPrecompileOverrides PrecompileOverrides // Precompile overrides for Optimism
 	EnableOpcodeOptimizations   bool                // Enable opcode optimization
-	TxDAG                       types.TxDAG
 }
 
 // ScopeContext contains the things that are per-call, such as stack and memory,
@@ -113,6 +108,8 @@ func NewEVMInterpreter(evm *EVM) *EVMInterpreter {
 	}
 	return &EVMInterpreter{evm: evm, table: table}
 }
+
+var DebugOpCode bool = false
 
 // Run loops and evaluates the contract's code with the given input data and returns
 // the return byte-slice and an error if one occurred.
@@ -195,13 +192,15 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		op = contract.GetOp(pc)
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
+		if DebugOpCode {
+			fmt.Printf("[DEBUG invalid gas used, original] blocknumber:%d, txIndex:%d, from:%s, to:%s, op:%s, cost:%d\n", contract.BlockNumber, contract.TxIndex, contract.caller.Address(), contract.self.Address(), op.String(), cost)
+		}
 		// Validate stack
 		if sLen := stack.len(); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
 		} else if sLen > operation.maxStack {
 			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
 		}
-		fmt.Printf("[DEBUG invalid gas used] from:%s, to:%s, op:%s, cost:%d\n", contract.caller.Address(), contract.self.Address(), op.String(), cost)
 		if !contract.UseGas(cost) {
 			return nil, ErrOutOfGas
 		}
