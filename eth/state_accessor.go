@@ -147,7 +147,7 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 			return nil, nil, fmt.Errorf("block #%d not found", next)
 		}
 		vm.DebugOpCode = false
-		if current.NumberU64() == 7180439 {
+		if current.NumberU64() > 0 {
 			log.Info("[DEBUG invalid gas used, original] process in hashState", "blockNumber", block.NumberU64())
 			vm.DebugOpCode = true
 		}
