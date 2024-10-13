@@ -1949,13 +1949,16 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 
 			// Process block using the parent state as reference point
 			pstart = time.Now()
-			fmt.Printf("[DEBUG invalid gas used] block %d, gas used %d\n", block.NumberU64(), block.GasUsed())
+			vm.DebugOpCode = false
+			if block.NumberU64() == 7180439 || block.NumberU64()%100 == 0 {
+				log.Info("[DEBUG invalid gas used] process in insertChain", "block", block.NumberU64())
+				vm.DebugOpCode = true
+			}
 			receipts, logs, usedGas, err = bc.processor.Process(block, statedb, bc.vmConfig)
 			if err == FallbackToSerialProcessorErr {
 				bc.UseSerialProcessor()
 				receipts, logs, usedGas, err = bc.processor.Process(block, statedb, bc.vmConfig)
 			}
-			fmt.Printf("[DEBUG invalid gas used] block %d, gas used %d\n", block.NumberU64(), block.GasUsed())
 			if err != nil {
 				bc.reportBlock(block, receipts, err)
 				followupInterrupt.Store(true)

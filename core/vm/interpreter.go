@@ -198,7 +198,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
 		if DebugOpCode {
-			fmt.Printf("[DEBUG invalid gas used, original] blocknumber:%d, txIndex:%d, from:%s, to:%s, op:%s, cost:%d\n", contract.BlockNumber, contract.TxIndex, contract.caller.Address(), contract.self.Address(), op.String(), cost)
+			fmt.Printf("[DEBUG invalid gas used] blocknumber:%d, txIndex:%d, from:%s, to:%s, op:%s, cost:%d\n", contract.BlockNumber, contract.TxIndex, contract.caller.Address(), contract.self.Address(), op.String(), cost)
 		}
 		// Validate stack
 		if sLen := stack.len(); sLen < operation.minStack {
