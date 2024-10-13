@@ -1950,7 +1950,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			// Process block using the parent state as reference point
 			pstart = time.Now()
 			vm.DebugOpCode = false
-			if block.NumberU64() == 7180439 || block.NumberU64()%100 == 0 {
+			if block.NumberU64() == 7180439 {
 				log.Info("[DEBUG invalid gas used] process in insertChain", "block", block.NumberU64())
 				vm.DebugOpCode = true
 			}
