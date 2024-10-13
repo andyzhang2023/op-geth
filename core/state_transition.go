@@ -484,6 +484,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		contractCreation = msg.To == nil
 		gs               = &state.GasSummary{}
 	)
+	gs.GasLimit = msg.GasLimit
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
 	gas, err := IntrinsicGas(msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, gs)
