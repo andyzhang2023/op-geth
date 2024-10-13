@@ -551,6 +551,8 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// The contract is a scoped environment for this execution context only.
 	contract := NewContract(caller, AccountRef(address), value, gas)
 	contract.SetCodeOptionalHash(&address, codeAndHash)
+	contract.BlockNumber = evm.Context.BlockNumber.Uint64()
+	contract.TxIndex = evm.TxIndex
 
 	if evm.Config.Tracer != nil {
 		if evm.depth == 0 {

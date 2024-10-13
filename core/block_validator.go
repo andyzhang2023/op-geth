@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
@@ -178,9 +179,10 @@ func DebugGsSummary(gasSummaries map[int]*state.GasSummary, block *types.Block) 
 func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateDB, receipts types.Receipts, usedGas uint64) error {
 	header := block.Header()
 	gasSummaries := statedb.PopGasSummaries()
-	//debugGsSummary(gasSummaries, block)
-	if block.GasUsed() != usedGas {
+	if vm.DebugOpCode {
 		DebugGsSummary(gasSummaries, block)
+	}
+	if block.GasUsed() != usedGas {
 		return fmt.Errorf("invalid gas used (remote: %d local: %d)", block.GasUsed(), usedGas)
 	}
 
