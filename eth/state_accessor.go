@@ -146,9 +146,17 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		if current = eth.blockchain.GetBlockByNumber(next); current == nil {
 			return nil, nil, fmt.Errorf("block #%d not found", next)
 		}
+		vm.DebugOpCode = false
+		if current.NumberU64() == 7180439 {
+			log.Info("[DEBUG invalid gas used, original] process in hashState", "blockNumber", block.NumberU64())
+			vm.DebugOpCode = true
+		}
 		_, _, _, err := eth.blockchain.Processor().Process(current, statedb, vm.Config{})
 		if err != nil {
 			return nil, nil, fmt.Errorf("processing block %d failed: %v", current.NumberU64(), err)
+		}
+		if vm.DebugOpCode {
+			core.DebugGsSummary(statedb.PopGasSummaries(), current)
 		}
 		// Finalize the state so any modifications are written to the trie
 		root, err := statedb.Commit(current.NumberU64(), eth.blockchain.Config().IsEIP158(current.Number()))
