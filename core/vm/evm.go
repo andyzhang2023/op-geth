@@ -17,9 +17,10 @@
 package vm
 
 import (
-	"github.com/ethereum/go-ethereum/core/opcodeCompiler/compiler"
 	"math/big"
 	"sync/atomic"
+
+	"github.com/ethereum/go-ethereum/core/opcodeCompiler/compiler"
 
 	"github.com/holiman/uint256"
 
@@ -102,6 +103,7 @@ type TxContext struct {
 	GasPrice   *big.Int       // Provides information for GASPRICE (and is used to zero the basefee if NoBaseFee is set)
 	BlobHashes []common.Hash  // Provides information for BLOBHASH
 	BlobFeeCap *big.Int       // Is used to zero the blobbasefee if NoBaseFee is set
+	TxIndex    int
 }
 
 // EVM is the Ethereum Virtual Machine base object and provides
@@ -260,6 +262,8 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 				codeHash := evm.StateDB.GetCodeHash(addrCopy)
 				contract.optimized, code = tryGetOptimizedCode(evm, codeHash, code)
 				contract.SetCallCode(&addrCopy, codeHash, code)
+				contract.BlockNumber = evm.Context.BlockNumber.Uint64()
+				contract.TxIndex = evm.TxIndex
 				ret, err = evm.interpreter.Run(contract, input, false)
 				gas = contract.Gas
 			} else {
@@ -268,6 +272,8 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 				// The depth-check is already done, and precompiles handled above
 				contract := NewContract(caller, AccountRef(addrCopy), value, gas)
 				contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
+				contract.BlockNumber = evm.Context.BlockNumber.Uint64()
+				contract.TxIndex = evm.TxIndex
 				ret, err = evm.interpreter.Run(contract, input, false)
 				gas = contract.Gas
 			}
