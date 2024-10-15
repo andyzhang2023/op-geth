@@ -1138,12 +1138,6 @@ func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error 
 		news = make([]*types.Transaction, 0, len(txs))
 	)
 	for i, tx := range txs {
-		// If the transaction is known, pre-set the error slot
-		if pool.all.Get(tx.Hash()) != nil {
-			errs[i] = txpool.ErrAlreadyKnown
-			knownTxMeter.Mark(1)
-			continue
-		}
 		// Exclude transactions with basic errors, e.g invalid signatures and
 		// insufficient intrinsic gas as soon as possible and cache senders
 		// in transactions before obtaining lock
