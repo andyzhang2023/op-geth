@@ -564,6 +564,8 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	if evm.Config.EnableOpcodeOptimizations {
 		compiler.DisableOptimization()
 	}
+	contract.BlockNumber = evm.Context.BlockNumber.Uint64()
+	contract.TxIndex = evm.TxIndex
 	ret, err := evm.interpreter.Run(contract, nil, false)
 
 	// After creation, retrieve to optimization

@@ -353,6 +353,7 @@ func buildMessage(txReq *PEVMTxRequest, signer types.Signer, header *types.Heade
 func pevmApplyTransactionStageExecution(msg *Message, gp *GasPool, statedb *state.UncommittedDB, evm *vm.EVM, delayGasFee bool) (*vm.EVM, *ExecutionResult, error) {
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg)
+	txContext.TxIndex = statedb.TxIndex()
 	evm.Reset(txContext, statedb)
 
 	// Apply the transaction to the current state (included in the env).
