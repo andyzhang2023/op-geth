@@ -197,9 +197,6 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		op = contract.GetOp(pc)
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
-		if DebugOpCode {
-			fmt.Printf("[DEBUG invalid gas used] blocknumber:%d, txIndex:%d, from:%s, to:%s, op:%s, cost:%d\n", contract.BlockNumber, contract.TxIndex, contract.caller.Address(), contract.self.Address(), op.String(), cost)
-		}
 		// Validate stack
 		if sLen := stack.len(); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
@@ -246,6 +243,9 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		} else if debug {
 			in.evm.Config.Tracer.CaptureState(pc, op, gasCopy, cost, callContext, in.returnData, in.evm.depth, err)
 			logged = true
+		}
+		if DebugOpCode {
+			fmt.Printf("[DEBUG invalid gas used] blocknumber:%d, txIndex:%d, from:%s, to:%s, op:%s, cost:%d\n", contract.BlockNumber, contract.TxIndex, contract.caller.Address(), contract.self.Address(), op.String(), cost)
 		}
 		// execute the operation
 		res, err = operation.execute(&pc, in, callContext)
