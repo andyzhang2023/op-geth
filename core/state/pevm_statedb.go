@@ -476,7 +476,7 @@ func (pst *UncommittedDB) ConflictsToMaindb() error {
 	return pst.conflictsToMaindb()
 }
 
-func (pst *UncommittedDB) Merge() error {
+func (pst *UncommittedDB) Merge(deleteEmptyObjects bool) error {
 	if pst.discarded {
 		// all the writes of this db will be discarded, including:
 		// 1. accessList
@@ -523,6 +523,15 @@ func (pst *UncommittedDB) Merge() error {
 	// 5. merge refund
 	if pst.refund != 0 {
 		pst.maindb.AddRefund(pst.refund)
+	}
+	// clean empty objects if needed
+	for _, obj := range pst.cache {
+		if obj.selfDestruct || (deleteEmptyObjects && obj.empty()) {
+			obj.deleted = true
+		}
+		// we don't need to do obj.finalize() here, it will be done in the maindb.Finalize()
+		// just mark the object as deleted
+		obj.created = false
 	}
 	return nil
 }

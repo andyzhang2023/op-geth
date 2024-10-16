@@ -27,6 +27,110 @@ import (
 var Address1 = common.HexToAddress("0x1")
 var Address2 = common.HexToAddress("0x2")
 
+func TestStateAfterDestruct(t *testing.T) {
+	// tx0:
+	//		1. create an account -> key1: nil
+	//		2. set state		 -> key1: value1
+	//		3. self destruct 	 -> key1: nil
+	// tx1:
+	//		1. create an account -> key1: nil
+	//		2. set state		 -> key1: value2
+	//		3. self destruct 	 -> key1: nil
+	txs := Txs{
+		{
+			{"Create", Address1},
+			{"SetNonce", Address1, 1}, // make the object not empty
+			{"SetState", Address1, "key1", "value1"},
+		},
+		{
+			{"SelfDestruct", Address1},
+		},
+		{
+			{"Create", Address1},
+			{"SetNonce", Address1, 1}, // make the object not empty
+			{"SetState", Address1, "key1", "value2"},
+		},
+		{
+			{"SelfDestruct", Address1},
+		},
+	}
+	checks := []Check{
+		{"state", Address1, "key1", "value1"},
+		{"state", Address1, "key1", ""},
+		{"state", Address1, "key1", "value2"},
+		{"state", Address1, "key1", ""},
+	}
+
+	verifyDBs := func(c Check, maindb *StateDB, uncommited *UncommittedDB) error {
+		if c.Verify(maindb) != nil {
+			return fmt.Errorf("maindb: %s", c.Verify(maindb).Error())
+		}
+		if c.Verify(uncommited) != nil {
+			return fmt.Errorf("uncommited: %s", c.Verify(uncommited).Error())
+		}
+		return nil
+	}
+
+	maindb := newStateDB()
+	shadow := newStateDB()
+	uncommitted := newUncommittedDB(maindb)
+	txs[0].Call(uncommitted)
+	txs[0].Call(shadow)
+	// key1: value1
+	if err := verifyDBs(checks[0], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	txs[1].Call(uncommitted)
+	txs[1].Call(shadow)
+	beforeMerge := checks[0]
+	if err := verifyDBs(beforeMerge, shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// now finalize the data to maindb
+	uncommitted.Merge(true)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+	// check the state again
+	if err := verifyDBs(checks[1], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// now recreate the account
+	uncommitted = newUncommittedDB(maindb)
+	// check the state again, to make sure the newly create uncommited have the same state of the shadow db
+	if err := verifyDBs(checks[1], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	txs[2].Call(uncommitted)
+	txs[2].Call(shadow)
+	beforeMerge = checks[2]
+	if err := verifyDBs(beforeMerge, shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	uncommitted.Merge(true)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+	// check the state again, to ensure the Finalize works
+	if err := verifyDBs(checks[2], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	uncommitted = newUncommittedDB(maindb)
+	txs[3].Call(uncommitted)
+	txs[3].Call(shadow)
+	// check the state again, to ensure the Finalize works
+	beforeMerge = checks[2]
+	if err := verifyDBs(beforeMerge, shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	uncommitted.Merge(true)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+	// check the state again, to ensure the Finalize works
+	if err := verifyDBs(checks[3], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+
+}
+
 // TestUncommitedDBCreateAccount tests the creation of an account in an uncommited DB.
 func TestPevmUncommitedDBCreateAccount(t *testing.T) {
 	// case 1. create an account without previous state
@@ -356,7 +460,7 @@ func TestPevmSelfDestructStateDB(t *testing.T) {
 		t.Fatalf("[uncommitted] unexpected selfdestruct state before finalized, err=%s", err.Error())
 	}
 	statedb.Finalise(true)
-	uncommitedState.Merge()
+	uncommitedState.Merge(true)
 	uncommitedState.maindb.Finalise(true)
 	checks = Checks{
 		{"code", Address1, []byte(nil)},
@@ -1700,7 +1804,7 @@ func runTxOnUncommittedDB(txs Txs, db *UncommittedDB, check CheckState) (common.
 			return common.Hash{}, fmt.Errorf("[before merge][maindb] failed to verify : %v", err)
 		}
 	}
-	if err := db.Merge(); err != nil {
+	if err := db.Merge(true); err != nil {
 		return common.Hash{}, fmt.Errorf("failed to merge: %v", err)
 	}
 	return db.maindb.IntermediateRoot(true), nil
@@ -1723,10 +1827,10 @@ func runConflictCase(prepare, txs1, txs2 Txs, checks []Check) error {
 	if err := txs2.Call(un2); err != nil {
 		return fmt.Errorf("failed to call txs2, err:%s", err.Error())
 	}
-	if err := un1.Merge(); err != nil {
+	if err := un1.Merge(true); err != nil {
 		return fmt.Errorf("failed to merge un1, err:%s", err.Error())
 	}
-	if err := un2.Merge(); err == nil {
+	if err := un2.Merge(true); err == nil {
 		return fmt.Errorf("un2 merge is expected to be failed")
 	}
 	for _, c := range checks {
