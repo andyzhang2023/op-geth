@@ -41,7 +41,7 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 		)
 		defer func() {
 			if DebugOpCode {
-				fmt.Printf("[DEBUG invalid gas used, original] make gasstorefunc: addr:%s, x:%s, y:%s, %s, cost: %d", contract.Address().String(), x.String(), y.String(), cond, cost)
+				fmt.Printf("[DEBUG invalid gas used, original] make gasstorefunc: addr:%s, x:%s, y:%s, %s, cost: %d", contract.Address().String(), slot.String(), common.Hash(y.Bytes32()).String(), cond, cost)
 			}
 		}()
 		// Check slot presence in the access list
