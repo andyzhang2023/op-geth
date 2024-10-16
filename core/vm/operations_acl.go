@@ -18,6 +18,7 @@ package vm
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -36,7 +37,13 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 			slot    = common.Hash(x.Bytes32())
 			current = evm.StateDB.GetState(contract.Address(), slot)
 			cost    = uint64(0)
+			cond    = "unknown"
 		)
+		defer func() {
+			if DebugOpCode {
+				fmt.Printf("[DEBUG invalid gas used, original] make gasstorefunc: addr:%s, x:%s, y:%s, %s, cost: %d", contract.Address().String(), x.String(), y.String(), cond, cost)
+			}
+		}()
 		// Check slot presence in the access list
 		if addrPresent, slotPresent := evm.StateDB.SlotInAccessList(contract.Address(), slot); !slotPresent {
 			cost = params.ColdSloadCostEIP2929
@@ -54,11 +61,13 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 		if current == value { // noop (1)
 			// EIP 2200 original clause:
 			//		return params.SloadGasEIP2200, nil
+			cond = "current = value"
 			return cost + params.WarmStorageReadCostEIP2929, nil // SLOAD_GAS
 		}
 		original := evm.StateDB.GetCommittedState(contract.Address(), x.Bytes32())
 		if original == current {
 			if original == (common.Hash{}) { // create slot (2.1.1)
+				cond = "original empty"
 				return cost + params.SstoreSetGasEIP2200, nil
 			}
 			if value == (common.Hash{}) { // delete slot (2.1.2b)
@@ -91,6 +100,7 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 		}
 		// EIP-2200 original clause:
 		//return params.SloadGasEIP2200, nil // dirty update (2.2)
+		cond = "warm storage read"
 		return cost + params.WarmStorageReadCostEIP2929, nil // dirty update (2.2)
 	}
 }
