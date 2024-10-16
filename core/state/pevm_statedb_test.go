@@ -27,6 +27,89 @@ import (
 var Address1 = common.HexToAddress("0x1")
 var Address2 = common.HexToAddress("0x2")
 
+func TestStateAfterDestructWithBalance(t *testing.T) {
+	// tx0:
+	//		1. create an account -> key1: nil
+	//		2. set state		 -> key1: value1
+	//		3. self destruct 	 -> key1: nil
+	// tx1:
+	//		1. create an account -> key1: nil
+	//		2. set state		 -> key1: value2
+	//		3. self destruct 	 -> key1: nil
+	txs := Txs{
+		{
+			{"Create", Address1},
+			{"AddBalance", Address1, big.NewInt(100)}, // balance should not be carried over
+			{"SetNonce", Address1, 1},                 // make the object not empty
+			{"SetState", Address1, "key1", "value1"},
+			{"SelfDestruct", Address1},
+		},
+		{
+			{"Create", Address1},
+			{"SetNonce", Address1, 1}, // make the object not empty
+			{"SetState", Address1, "key1", "value2"},
+		},
+	}
+	checks := []Checks{
+		// after execute tx0, before finalize
+		{
+			{"state", Address1, "key1", "value1"},
+			{"balance", Address1, big.NewInt(0)},
+		},
+		//after finalize tx0,
+		{
+			{"state", Address1, "key1", ""},
+			{"balance", Address1, big.NewInt(0)},
+		},
+		// after execute tx1, before && after finalize
+		{
+			{"state", Address1, "key1", "value2"},
+			{"balance", Address1, big.NewInt(0)},
+		},
+	}
+
+	verifyDBs := func(c Checks, maindb *StateDB, uncommited *UncommittedDB) error {
+		if c.Verify(maindb) != nil {
+			return fmt.Errorf("maindb: %s", c.Verify(maindb).Error())
+		}
+		if c.Verify(uncommited) != nil {
+			return fmt.Errorf("uncommited: %s", c.Verify(uncommited).Error())
+		}
+		return nil
+	}
+
+	maindb := newStateDB()
+	shadow := newStateDB()
+	uncommitted := newUncommittedDB(maindb)
+	txs[0].Call(uncommitted)
+	txs[0].Call(shadow)
+	if err := verifyDBs(checks[0], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// now finalize the data to maindb
+	uncommitted.Merge(true)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+	// now check the state after finalize
+	if err := verifyDBs(checks[1], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// now execute another tx
+	uncommitted = newUncommittedDB(maindb)
+	txs[1].Call(uncommitted)
+	txs[1].Call(shadow)
+	if err := verifyDBs(checks[2], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	uncommitted.Merge(true)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+	// check the state again, to ensure the Finalize works
+	if err := verifyDBs(checks[2], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+}
+
 func TestStateAfterDestruct(t *testing.T) {
 	// tx0:
 	//		1. create an account -> key1: nil
