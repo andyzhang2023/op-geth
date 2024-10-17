@@ -722,16 +722,18 @@ func (pst *UncommittedDB) getDeletedObjectWithState(addr common.Address, maindb 
 	if _, ok := o.state[hash]; ok {
 		return o
 	}
-	// load code from maindb
-	deletedObj := pst.maindb.getStateObject(addr)
-	var value = common.Hash{}
-	if deletedObj == nil {
-		pst.reads.recordKVOnce(addr, hash, common.Hash{})
-	} else {
-		value = deletedObj.GetState(hash)
-		pst.reads.recordKVOnce(addr, hash, value)
+	// first, load code from maindb and record the previous state
+	// we can't use getStateObject() here , because it will be used for conflict check.
+	deletedObj := pst.maindb.getDeletedStateObject(addr)
+	if deletedObj != nil {
+		pst.reads.recordKVOnce(addr, hash, deletedObj.GetState(hash))
 	}
-	// set code into the cache
+
+	// now return the true state into cache
+	var value = common.Hash{}
+	if deletedObj != nil && !deletedObj.deleted {
+		value = deletedObj.GetState(hash)
+	}
 	o.state[hash] = value
 	return o
 }
