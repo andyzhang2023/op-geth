@@ -234,6 +234,7 @@ func (pst *UncommittedDB) GetCommittedState(addr common.Address, hash common.Has
 			read = pst.reads[addr].Debug()
 		}
 		fmt.Printf("[DEBUG invalid gas used]GetCommittedState: block:%d, txIndex:%d, addr:%s, key:%s, val:%s, cache:%s, read:%s\n", pst.BlockNumber, pst.txIndex, addr.String(), hash.String(), val.String(), debug, read)
+		pst.Debug(addr, hash)
 	}()
 	return
 }
@@ -248,6 +249,7 @@ func (pst *UncommittedDB) GetState(addr common.Address, hash common.Hash) (val c
 			read = pst.reads[addr].Debug()
 		}
 		fmt.Printf("[DEBUG invalid gas used]GetState: block:%d, txIndex:%d, addr:%s, key:%s, val:%s, cache:%s, read:%s\n", pst.BlockNumber, pst.txIndex, addr.String(), hash.String(), val.String(), debug, read)
+		pst.Debug(addr, hash)
 	}()
 	obj := pst.getDeletedObjectWithState(addr, pst.maindb, hash)
 	if obj == nil || obj.deleted {
@@ -267,6 +269,7 @@ func (pst *UncommittedDB) SetState(addr common.Address, key, value common.Hash) 
 			read = pst.reads[addr].Debug()
 		}
 		fmt.Printf("[DEBUG invalid gas used]SetState: block:%d, txIndex:%d, addr:%s, key:%s, val:%s, debug:%s, read:%s\n", pst.BlockNumber, pst.txIndex, addr.String(), key.String(), value.String(), debug, read)
+		pst.Debug(addr, key)
 	}()
 	pst.journal.append(newJStorage(pst.cache[addr], addr, key))
 	if obj := pst.getDeletedObjectWithState(addr, pst.maindb, key); obj == nil || obj.deleted {
