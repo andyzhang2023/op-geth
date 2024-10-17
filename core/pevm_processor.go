@@ -168,8 +168,10 @@ func (p *PEVMProcessor) confirmTxResult(statedb *state.StateDB, gp *GasPool, res
 	}
 	result.slotDB.Finalise(isByzantium || isEIP158)
 	addr := common.HexToAddress("0x37C92c071779ec0C104e92cC5AE151071cc9a9B4")
-	result.slotDB.Debug(addr, common.Hash{0x1})
-	result.slotDB.Debug(addr, common.Hash{0x0})
+	key1 := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000001")
+	key0 := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000")
+	result.slotDB.Debug(addr, key1)
+	result.slotDB.Debug(addr, key0)
 
 	delayGasFee := result.result.delayFees
 	// add delayed gas fee
