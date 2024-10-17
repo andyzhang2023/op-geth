@@ -172,6 +172,7 @@ func (p *PEVMProcessor) confirmTxResult(statedb *state.StateDB, gp *GasPool, res
 	key0 := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000")
 	result.slotDB.Debug(addr, key1)
 	result.slotDB.Debug(addr, key0)
+	fmt.Printf("[DEBUG invalid gas used] blockconfirmed, block:%d txIndex:%d\n", result.txReq.block.Number(), result.txReq.txIndex)
 
 	delayGasFee := result.result.delayFees
 	// add delayed gas fee
