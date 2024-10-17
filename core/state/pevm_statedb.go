@@ -93,6 +93,7 @@ func (pst *UncommittedDB) SetTxContext(txHash common.Hash, txIndex int) {
 // ===============================================
 // Constructor
 func (pst *UncommittedDB) CreateAccount(addr common.Address) {
+	fmt.Printf("[DEBUG invalid gas used] CreateAccount: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	pst.journal.append(newJCreateAccount(pst.cache[addr], addr))
 	obj := pst.getDeletedObject(addr, pst.maindb)
 	// keep the balance
@@ -155,6 +156,7 @@ func (pst *UncommittedDB) Prepare(rules params.Rules, sender, coinbase common.Ad
 //  2. object
 
 func (pst *UncommittedDB) SubBalance(addr common.Address, amount *uint256.Int) {
+	fmt.Printf("[DEBUG invalid gas used] SubBalance: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	pst.journal.append(newJBalance(pst.cache[addr], addr))
 	obj := pst.getOrNewObject(addr)
 	newb := new(uint256.Int).Sub(obj.balance, amount)
@@ -162,6 +164,7 @@ func (pst *UncommittedDB) SubBalance(addr common.Address, amount *uint256.Int) {
 }
 
 func (pst *UncommittedDB) AddBalance(addr common.Address, amount *uint256.Int) {
+	fmt.Printf("[DEBUG invalid gas used] AddBalance: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	pst.journal.append(newJBalance(pst.cache[addr], addr))
 	obj := pst.getOrNewObject(addr)
 	newb := new(uint256.Int).Add(obj.balance, amount)
@@ -169,6 +172,7 @@ func (pst *UncommittedDB) AddBalance(addr common.Address, amount *uint256.Int) {
 }
 
 func (pst *UncommittedDB) GetBalance(addr common.Address) *uint256.Int {
+	fmt.Printf("[DEBUG invalid gas used] GetBalance: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	if obj := pst.getObject(addr); obj != nil {
 		return new(uint256.Int).Set(obj.balance)
 	}
@@ -176,6 +180,7 @@ func (pst *UncommittedDB) GetBalance(addr common.Address) *uint256.Int {
 }
 
 func (pst *UncommittedDB) GetNonce(addr common.Address) uint64 {
+	fmt.Printf("[DEBUG invalid gas used] GetNonce: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	if obj := pst.getObject(addr); obj != nil {
 		return obj.nonce
 	}
@@ -183,12 +188,14 @@ func (pst *UncommittedDB) GetNonce(addr common.Address) uint64 {
 }
 
 func (pst *UncommittedDB) SetNonce(addr common.Address, nonce uint64) {
+	fmt.Printf("[DEBUG invalid gas used] SetNonce: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	pst.journal.append(newJNonce(pst.cache[addr], addr))
 	pst.getOrNewObject(addr)
 	pst.cache.setNonce(addr, nonce)
 }
 
 func (pst *UncommittedDB) GetCodeHash(addr common.Address) common.Hash {
+	fmt.Printf("[DEBUG invalid gas used] GetCodeHash: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	obj := pst.getDeletedObjectWithCode(addr, pst.maindb)
 	if obj == nil || obj.deleted {
 		return common.Hash{}
@@ -197,6 +204,7 @@ func (pst *UncommittedDB) GetCodeHash(addr common.Address) common.Hash {
 }
 
 func (pst *UncommittedDB) GetCode(addr common.Address) []byte {
+	fmt.Printf("[DEBUG invalid gas used] GetCode: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	obj := pst.getDeletedObjectWithCode(addr, pst.maindb)
 	if obj == nil || obj.deleted {
 		return nil
@@ -205,6 +213,7 @@ func (pst *UncommittedDB) GetCode(addr common.Address) []byte {
 }
 
 func (pst *UncommittedDB) GetCodeSize(addr common.Address) int {
+	fmt.Printf("[DEBUG invalid gas used] GetCodeSize: block:%d, txIndex:%d, addr:%s\n", pst.BlockNumber, pst.txIndex, addr.String())
 	obj := pst.getDeletedObjectWithCode(addr, pst.maindb)
 	if obj == nil || obj.deleted {
 		return 0
@@ -213,6 +222,7 @@ func (pst *UncommittedDB) GetCodeSize(addr common.Address) int {
 }
 
 func (pst *UncommittedDB) SetCode(addr common.Address, code []byte) {
+	fmt.Printf("[DEBUG invalid gas used] SetCode: block:%d, txIndex:%d, addr:%s, codeSize:%d\n", pst.BlockNumber, pst.txIndex, addr.String(), len(code))
 	pst.journal.append(newJCode(pst.cache[addr], addr))
 	if obj := pst.getDeletedObjectWithCode(addr, pst.maindb); obj == nil || obj.deleted {
 		pst.journal.append(newJCreateAccount(pst.cache[addr], addr))
