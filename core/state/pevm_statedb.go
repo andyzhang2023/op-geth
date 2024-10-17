@@ -723,7 +723,7 @@ func (pst *UncommittedDB) getDeletedObjectWithState(addr common.Address, maindb 
 		return o
 	}
 	// load code from maindb
-	deletedObj := pst.maindb.getDeletedStateObject(addr)
+	deletedObj := pst.maindb.getStateObject(addr)
 	var value = common.Hash{}
 	if deletedObj == nil {
 		pst.reads.recordKVOnce(addr, hash, common.Hash{})
