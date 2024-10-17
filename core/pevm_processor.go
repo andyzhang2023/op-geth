@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ethereum/go-ethereum/consensus"
@@ -87,6 +88,8 @@ func (p *PEVMProcessor) executeInSlot(maindb *state.StateDB, txReq *PEVMTxReques
 	slotDB := state.NewUncommittedDB(maindb)
 	blockContext := NewEVMBlockContext(txReq.block.Header(), p.bc, nil, p.config, slotDB) // can share blockContext within a block for efficiency
 	txContext := NewEVMTxContext(txReq.msg)
+	slotDB.BlockNumber = txReq.block.NumberU64()
+	slotDB.SetTxContext(txReq.tx.Hash(), txReq.txIndex)
 	vmenv := vm.NewEVM(blockContext, txContext, slotDB, p.config, txReq.vmConfig)
 
 	rules := p.config.Rules(txReq.block.Number(), blockContext.Random != nil, blockContext.Time)
@@ -101,7 +104,6 @@ func (p *PEVMProcessor) executeInSlot(maindb *state.StateDB, txReq *PEVMTxReques
 		on = slotDB.GetNonce(txReq.msg.From)
 	}
 
-	slotDB.SetTxContext(txReq.tx.Hash(), txReq.txIndex)
 	evm, result, err := pevmApplyTransactionStageExecution(txReq.msg, gpSlot, slotDB, vmenv, p.delayGasFee)
 	txResult := PEVMTxResult{
 		txReq:         txReq,
@@ -165,6 +167,9 @@ func (p *PEVMProcessor) confirmTxResult(statedb *state.StateDB, gp *GasPool, res
 		return err
 	}
 	result.slotDB.Finalise(isByzantium || isEIP158)
+	addr := common.HexToAddress("0x37C92c071779ec0C104e92cC5AE151071cc9a9B4")
+	result.slotDB.Debug(addr, common.Hash{0x1})
+	result.slotDB.Debug(addr, common.Hash{0x0})
 
 	delayGasFee := result.result.delayFees
 	// add delayed gas fee

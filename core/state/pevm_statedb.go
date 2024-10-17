@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -30,9 +31,10 @@ type UncommittedDB struct {
 	discarded bool
 
 	// transaction context
-	txHash  common.Hash
-	txIndex int
-	logs    []*types.Log
+	txHash      common.Hash
+	txIndex     int
+	BlockNumber uint64
+	logs        []*types.Log
 
 	// accessList
 	accessList *accessList
@@ -219,27 +221,71 @@ func (pst *UncommittedDB) SetCode(addr common.Address, code []byte) {
 	pst.cache.setCode(addr, code)
 }
 
-func (pst *UncommittedDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
+func (pst *UncommittedDB) GetCommittedState(addr common.Address, hash common.Hash) (val common.Hash) {
 	// this is a uncommitted db, so just get it from the maindb
 	//@TODO GetCommittedState() need to be thread safe
-	return pst.maindb.GetCommittedState(addr, hash)
+	val = pst.maindb.GetCommittedState(addr, hash)
+	defer func() {
+		var debug, read string = "nil", "nil"
+		if pst.cache[addr] != nil {
+			debug = pst.cache[addr].Debug()
+		}
+		if pst.reads[addr] != nil {
+			read = pst.reads[addr].Debug()
+		}
+		fmt.Printf("[DEBUG invalid gas used]GetCommittedState: block:%d, txIndex:%d, addr:%s, key:%s, val:%s, cache:%s, read:%s\n", pst.BlockNumber, pst.txIndex, addr.String(), hash.String(), val.String(), debug, read)
+	}()
+	return
 }
 
-func (pst *UncommittedDB) GetState(addr common.Address, hash common.Hash) common.Hash {
+func (pst *UncommittedDB) GetState(addr common.Address, hash common.Hash) (val common.Hash) {
+	defer func() {
+		var debug, read string = "nil", "nil"
+		if pst.cache[addr] != nil {
+			debug = pst.cache[addr].Debug()
+		}
+		if pst.reads[addr] != nil {
+			read = pst.reads[addr].Debug()
+		}
+		fmt.Printf("[DEBUG invalid gas used]GetState: block:%d, txIndex:%d, addr:%s, key:%s, val:%s, cache:%s, read:%s\n", pst.BlockNumber, pst.txIndex, addr.String(), hash.String(), val.String(), debug, read)
+	}()
 	obj := pst.getDeletedObjectWithState(addr, pst.maindb, hash)
 	if obj == nil || obj.deleted {
-		return common.Hash{}
+		val = common.Hash{}
+		return
 	}
 	return obj.state[hash]
 }
 
 func (pst *UncommittedDB) SetState(addr common.Address, key, value common.Hash) {
+	defer func() {
+		var debug, read string = "nil", "nil"
+		if pst.cache[addr] != nil {
+			debug = pst.cache[addr].Debug()
+		}
+		if pst.reads[addr] != nil {
+			read = pst.reads[addr].Debug()
+		}
+		fmt.Printf("[DEBUG invalid gas used]SetState: block:%d, txIndex:%d, addr:%s, key:%s, val:%s, debug:%s, read:%s\n", pst.BlockNumber, pst.txIndex, addr.String(), key.String(), value.String(), debug, read)
+	}()
 	pst.journal.append(newJStorage(pst.cache[addr], addr, key))
 	if obj := pst.getDeletedObjectWithState(addr, pst.maindb, key); obj == nil || obj.deleted {
 		pst.journal.append(newJCreateAccount(pst.cache[addr], addr))
 		pst.cache.create(addr)
 	}
 	pst.cache.setState(addr, key, value)
+}
+
+func (pst *UncommittedDB) Debug(addr common.Address, key common.Hash) {
+	if obj := pst.cache[addr]; obj != nil {
+		var val = pst.GetState(addr, key)
+		var cval = pst.GetCommittedState(addr, key)
+		fmt.Printf("[DEBUG invalid gas used] debugkey block:%d, txIndex:%d, addr:%s, key:%s, val:%s, cval:%s, cache:%s\n", pst.BlockNumber, pst.txIndex, addr.String(), key, val, cval, obj.Debug())
+	} else {
+		var val = pst.GetState(addr, key)
+		var cval = pst.GetCommittedState(addr, key)
+		fmt.Printf("[DEBUG invalid gas used] debugkey block:%d, txIndex:%d, addr:%s, key:%s, val:%s, cval:%s, nil\n", pst.BlockNumber, pst.txIndex, addr.String(), key, val, cval)
+	}
 }
 
 func (pst *UncommittedDB) SelfDestruct(addr common.Address) {
@@ -565,7 +611,7 @@ func (pst *UncommittedDB) getDeletedObject(addr common.Address, maindb *StateDB)
 	// it reads the cache from the maindb
 	obj := maindb.getDeletedStateObject(addr)
 	defer func() {
-		pst.reads.recordOnce(addr, copyObj(obj))
+		pst.reads.recordOnce(addr, copyObj(obj), pst.BlockNumber, pst.txIndex)
 	}()
 	if obj == nil {
 		// the object is not found, do a read record
@@ -689,6 +735,11 @@ type state struct {
 	selfDestruct bool
 	created      bool
 	deleted      bool
+}
+
+func (s *state) Debug() string {
+	return fmt.Sprintf("addr:%s, balance:%d, nonce:%d, codeSize:%d, state(size):%d, selfDestruct:%t, created:%t, deleted:%t",
+		s.addr.String(), s.balance.Uint64(), s.nonce, s.codeSize, len(s.state), s.selfDestruct, s.created, s.deleted)
 }
 
 func (c *state) clone() *state {
@@ -816,14 +867,15 @@ func copyObj(obj *stateObject) *state {
 
 type reads map[common.Address]*state
 
-func (sts reads) recordOnce(addr common.Address, st *state) *state {
+func (sts reads) recordOnce(addr common.Address, st *state, blockNumber uint64, txIndex int) *state {
 	if _, ok := sts[addr]; !ok {
 		if st == nil {
 			// this is a newly created object
-			sts[addr] = &state{addr: addr, created: true, state: make(map[common.Hash]common.Hash), codeSize: -1}
+			sts[addr] = &state{addr: addr, balance: uint256.MustFromBig(big.NewInt(0)), created: true, state: make(map[common.Hash]common.Hash), codeSize: -1}
 		} else {
 			sts[addr] = st
 		}
+		fmt.Printf("[DEBUG invalid gas used]recordOnce block:%d, txIndex:%d, addr:%s, state:%s\n", blockNumber, txIndex, addr.String(), sts[addr].Debug())
 	}
 	return st
 }
