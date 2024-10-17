@@ -27,6 +27,87 @@ import (
 var Address1 = common.HexToAddress("0x1")
 var Address2 = common.HexToAddress("0x2")
 
+func TestInvalidGasUsed(t *testing.T) {
+	txs := Txs{
+		{ // prepare for the account
+			{"Create", Address1},
+			{"AddBalance", Address1, big.NewInt(100)}, // make the object not empty
+			{"SetState", Address1, "key1", "value1"},
+		},
+		{
+			{"SetNonce", Address1, 1}, // make the object not empty
+			{"SelfDestruct", Address1},
+		},
+		{
+			{"GetCodeHash", Address1, common.Hash{0x1}},
+			{"GetNonce", Address1, 0},
+			{"Create", Address1},      // re-create the object
+			{"SetNonce", Address1, 1}, // make the object not empty
+		},
+	}
+	checks := []Checks{
+		// after execute tx0, before finalize
+		{
+			{"state", Address1, "key1", "value1"},
+		},
+		//after finalize tx0,
+		{
+			{"state", Address1, "key1", ""},
+		},
+		// after execute tx1, before && after finalize
+		{
+			{"state", Address1, "key1", ""},
+		},
+	}
+
+	verifyDBs := func(c Checks, maindb *StateDB, uncommited *UncommittedDB) error {
+		if c.Verify(maindb) != nil {
+			return fmt.Errorf("maindb: %s", c.Verify(maindb).Error())
+		}
+		if c.Verify(uncommited) != nil {
+			return fmt.Errorf("uncommited: %s", c.Verify(uncommited).Error())
+		}
+		return nil
+	}
+
+	maindb := newStateDB()
+	shadow := newStateDB()
+	// firtst prepare for the account, to ensure the selfDestruct happens
+	txs[0].Call(maindb)
+	txs[0].Call(shadow)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+
+	uncommitted := newUncommittedDB(maindb)
+	txs[1].Call(uncommitted)
+	txs[1].Call(shadow)
+	if err := verifyDBs(checks[0], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// now finalize the data to maindb
+	uncommitted.Merge(true)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+	// now check the state after finalize
+	if err := verifyDBs(checks[1], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	// now execute another tx
+	uncommitted = newUncommittedDB(maindb)
+	txs[2].Call(uncommitted)
+	txs[2].Call(shadow)
+	if err := verifyDBs(checks[2], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+	uncommitted.Merge(true)
+	maindb.Finalise(true)
+	shadow.Finalise(true)
+	// check the state again, to ensure the Finalize works
+	if err := verifyDBs(checks[2], shadow, uncommitted); err != nil {
+		t.Fatalf("ut failed, err=%s", err.Error())
+	}
+}
+
 func TestStateAfterDestructWithBalance(t *testing.T) {
 	// tx0:
 	//		1. create an account -> key1: nil
@@ -1686,6 +1767,14 @@ type Tx []Op
 
 func (op Op) Call(db vm.StateDB) error {
 	switch op[0].(string) {
+	case "GetNonce":
+		addr := op[1].(common.Address)
+		db.GetNonce(addr)
+		return nil
+	case "GetCodeHash":
+		addr := op[1].(common.Address)
+		db.GetCodeHash(addr)
+		return nil
 	case "SetTxContext":
 		state := db
 		if db, ok := state.(*UncommittedDB); ok {
