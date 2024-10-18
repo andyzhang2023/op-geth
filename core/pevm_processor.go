@@ -121,7 +121,7 @@ func (p *PEVMProcessor) executeInSlot(maindb *state.StateDB, txReq *PEVMTxReques
 func (p *PEVMProcessor) toConfirmTxIndexResult(txResult *PEVMTxResult) error {
 	txReq := txResult.txReq
 	if err := p.hasConflict(txResult); err != nil {
-		log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
+		log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d, err:%s\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex, err.Error()))
 		return err
 	}
 
