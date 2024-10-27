@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/holiman/uint256"
@@ -51,6 +52,10 @@ type BlockGen struct {
 	withdrawals []*types.Withdrawal
 
 	engine consensus.Engine
+}
+
+func (b *BlockGen) Header() *types.Header {
+	return b.header
 }
 
 // SetCoinbase sets the coinbase of the generated block.
@@ -125,6 +130,25 @@ func (b *BlockGen) addTx(bc *BlockChain, vmConfig vm.Config, tx *types.Transacti
 	if b.header.BlobGasUsed != nil {
 		*b.header.BlobGasUsed += receipt.BlobGasUsed
 	}
+}
+
+func (b *BlockGen) AddTxWithError(tx *types.Transaction) error {
+	var bc *BlockChain = nil
+	vmConfig := vm.Config{}
+	if b.gasPool == nil {
+		b.SetCoinbase(common.Address{})
+	}
+	b.statedb.SetTxContext(tx.Hash(), len(b.txs))
+	receipt, err := ApplyTransaction(b.cm.config, bc, &b.header.Coinbase, b.gasPool, b.statedb, b.header, tx, &b.header.GasUsed, vmConfig)
+	if err != nil {
+		return err
+	}
+	b.txs = append(b.txs, tx)
+	b.receipts = append(b.receipts, receipt)
+	if b.header.BlobGasUsed != nil {
+		*b.header.BlobGasUsed += receipt.BlobGasUsed
+	}
+	return nil
 }
 
 // AddTx adds a transaction to the generated block. If no coinbase has
@@ -289,6 +313,174 @@ func (b *BlockGen) OffsetTime(seconds int64) {
 		panic("block time out of range")
 	}
 	b.header.Difficulty = b.engine.CalcDifficulty(b.cm, b.header.Time, b.parent.Header())
+}
+
+type ChainMaker struct {
+	Cm          *chainMaker
+	BlocksEvent chan *types.Block
+	NextBlock   func()
+	BlockCount  int
+	parent      *types.Block
+	Gen         func(int, *BlockGen)
+	stateCache  state.Database
+}
+
+func (cm *ChainMaker) Config() *params.ChainConfig {
+	return cm.Cm.config
+}
+
+func (cm *ChainMaker) CurrentBlock() *types.Header {
+	return cm.Cm.chain[len(cm.Cm.chain)-1].Header()
+}
+
+func (cm *ChainMaker) GetBlock(hash common.Hash, number uint64) *types.Block {
+	return cm.Cm.chainByHash[hash]
+}
+
+func (cm *ChainMaker) StateAt(root common.Hash) (*state.StateDB, error) {
+	statedb, err := state.New(root, cm.stateCache, nil)
+	if err != nil {
+		panic(err)
+	}
+	return statedb, nil
+}
+
+func (cm *ChainMaker) BlocksAndReceipts() ([]*types.Block, []types.Receipts) {
+	return cm.Cm.chain, cm.Cm.receipts
+}
+
+func (cm *ChainMaker) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) event.Subscription {
+	sub := &chainMakerHeadEvent{ch: ch}
+	go func() {
+		for sub.stop == false {
+			newblock := <-cm.BlocksEvent
+			ch <- ChainHeadEvent{Block: newblock}
+		}
+	}()
+	return sub
+}
+
+type chainMakerHeadEvent struct {
+	ch   chan<- ChainHeadEvent
+	stop bool
+}
+
+func (ce *chainMakerHeadEvent) Err() <-chan error {
+	return make(chan error)
+}
+
+func (ce *chainMakerHeadEvent) Unsubscribe() {
+	ce.stop = true
+}
+
+func BuildChainMaker(config *params.ChainConfig, parent *types.Block, engine consensus.Engine, db ethdb.Database) *ChainMaker {
+	if config == nil {
+		config = params.TestChainConfig
+	}
+	if engine == nil {
+		panic("nil consensus engine")
+	}
+	cm := newChainMaker(parent, config, engine)
+
+	maker := &ChainMaker{
+		Cm:          cm,
+		BlocksEvent: make(chan *types.Block, 1),
+		BlockCount:  0,
+		parent:      parent,
+		Gen:         nil,
+	}
+	maker.Cm.add(parent, nil)
+
+	genblock := func(i int, parent *types.Block, triedb *triedb.Database, statedb *state.StateDB) (*types.Block, types.Receipts) {
+		b := &BlockGen{i: i, cm: cm, parent: parent, statedb: statedb, engine: engine}
+		b.header = cm.makeHeader(parent, statedb, b.engine)
+
+		// Set the difficulty for clique block. The chain maker doesn't have access
+		// to a chain, so the difficulty will be left unset (nil). Set it here to the
+		// correct value.
+		if b.header.Difficulty == nil {
+			if config.TerminalTotalDifficulty == nil && !config.IsOptimismBedrock(b.header.Number) {
+				// Clique chain
+				b.header.Difficulty = big.NewInt(2)
+			} else {
+				// Post-merge chain
+				b.header.Difficulty = big.NewInt(0)
+			}
+		}
+		// Mutate the state and block according to any hard-fork specs
+		if daoBlock := config.DAOForkBlock; daoBlock != nil {
+			limit := new(big.Int).Add(daoBlock, params.DAOForkExtraRange)
+			if b.header.Number.Cmp(daoBlock) >= 0 && b.header.Number.Cmp(limit) < 0 {
+				if config.DAOForkSupport {
+					b.header.Extra = common.CopyBytes(params.DAOForkBlockExtra)
+				}
+			}
+		}
+		if config.DAOForkSupport && config.DAOForkBlock != nil && config.DAOForkBlock.Cmp(b.header.Number) == 0 {
+			misc.ApplyDAOHardFork(statedb)
+		}
+		if config.PreContractForkBlock != nil && config.PreContractForkBlock.Cmp(b.header.Number) == 0 {
+			misc.ApplyPreContractHardFork(statedb)
+		}
+		// Execute any user modifications to the block
+		if maker.Gen != nil {
+			maker.Gen(i, b)
+		}
+
+		block, err := b.engine.FinalizeAndAssemble(cm, b.header, statedb, b.txs, b.uncles, b.receipts, b.withdrawals)
+		if err != nil {
+			panic(err)
+		}
+
+		// Write state changes to db
+		root, err := statedb.Commit(b.header.Number.Uint64(), config.IsEIP158(b.header.Number))
+		if err != nil {
+			panic(fmt.Sprintf("state write error: %v", err))
+		}
+		if err = triedb.Commit(root, false); err != nil {
+			panic(fmt.Sprintf("trie write error: %v", err))
+		}
+		return block, b.receipts
+	}
+
+	// Forcibly use hash-based state scheme for retaining all nodes in disk.
+	triedb := triedb.NewDatabase(db, triedb.HashDefaults)
+	maker.stateCache = state.NewDatabaseWithNodeDB(db, triedb)
+	//defer triedb.Close()
+	maker.NextBlock = func() {
+		statedb, _ := maker.StateAt(maker.parent.Root())
+		block, receipts := genblock(maker.BlockCount, maker.parent, triedb, statedb)
+		maker.BlockCount++
+		receiptsCount := len(receipts)
+		txs := block.Transactions()
+		if len(receipts) > len(txs) {
+			receipts = receipts[:len(txs)]
+		} else if len(receipts) < len(txs) {
+			txs = txs[:len(receipts)]
+		}
+		var blobGasPrice *big.Int
+		if block.ExcessBlobGas() != nil {
+			blobGasPrice = eip4844.CalcBlobFee(*block.ExcessBlobGas())
+		}
+		if err := receipts.DeriveFields(config, block.Hash(), block.NumberU64(), block.Time(), block.BaseFee(), blobGasPrice, txs); err != nil {
+			panic(err)
+		}
+
+		// Re-expand to ensure all receipts are returned.
+		receipts = receipts[:receiptsCount]
+
+		// Advance the chain.
+		cm.add(block, receipts)
+		maker.parent = block
+
+		// Send the block to the event channel
+		select {
+		case maker.BlocksEvent <- block:
+		default:
+		}
+	}
+
+	return maker
 }
 
 // GenerateChain creates a chain of n blocks. The first block's
