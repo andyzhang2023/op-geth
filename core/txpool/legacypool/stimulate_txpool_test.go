@@ -144,8 +144,15 @@ func InsertChain(bc *core.BlockChain, blocks []*types.Block) error {
 	return err
 }
 
-func TestTxpoolTps5000(t *testing.T) {
-	var p2pParallel = 1
+func TestTxpoolP2PParallel1(t *testing.T) {
+	runTxpoolCaseTps50000(t, 1)
+}
+
+func TestTxpoolP2PParallel2(t *testing.T) {
+	runTxpoolCaseTps50000(t, 2)
+}
+
+func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 	var pool *txpool.TxPool
 	var randomFrom, randomTo, genesisAlloc = prepareAddress(50000)
 	var (
@@ -154,7 +161,7 @@ func TestTxpoolTps5000(t *testing.T) {
 			Config:   params.TestChainConfig,
 			Alloc:    genesisAlloc,
 			BaseFee:  baseFee,
-			GasLimit: 500000000,
+			GasLimit: 5000000000,
 		}
 		signer   = types.LatestSigner(gspec.Config)
 		targetBN = 30 // 100 blocks totally
@@ -185,6 +192,7 @@ func TestTxpoolTps5000(t *testing.T) {
 		}
 	}
 	// generate txs at rate of 5000 txs per second
+	var addSleep time.Duration
 	go func() {
 		for n := 0; n < targetBN*tps; {
 			t0 := time.Now()
@@ -202,9 +210,10 @@ func TestTxpoolTps5000(t *testing.T) {
 			}
 			sleep := time.Second - time.Since(t0)
 			if sleep > 0 {
+				addSleep += sleep
 				time.Sleep(sleep)
+				fmt.Printf("[txpool.Add]txs:%d, sleep:%s\n", currLoop, sleep)
 			}
-			fmt.Printf("[txpool.Add]txs:%d, sleep:%s\n", currLoop, sleep)
 		}
 		close(txs)
 	}()
@@ -234,6 +243,8 @@ func TestTxpoolTps5000(t *testing.T) {
 		if sleep > 0 {
 			buildBlockSleep += sleep
 			time.Sleep(sleep)
+		} else {
+			sleep = 0
 		}
 		curr := cm.GetBlock(cm.CurrentBlock().Hash(), 0)
 		pending, queued := legacyPool.Stats()
@@ -247,7 +258,7 @@ func TestTxpoolTps5000(t *testing.T) {
 	for i := 0; i < len(blocks); i++ {
 		totaltxs += len(blocks[i].Transactions())
 	}
-	fmt.Printf("durations:%s, total txs: %d, tps: %f, buildBlockSleep:%s, executedFailed:%d\n", cost, totaltxs, float64(totaltxs)/cost.Seconds(), buildBlockSleep/time.Duration(len(blocks)), executeFailed)
+	fmt.Printf("durations:%s, total txs: %d, tps: %f, addTxSleep:%s, buildBlockSleep:%s, executedFailed:%d\n", cost, totaltxs, float64(totaltxs)/cost.Seconds(), addSleep, buildBlockSleep/time.Duration(len(blocks)), executeFailed)
 
 }
 
