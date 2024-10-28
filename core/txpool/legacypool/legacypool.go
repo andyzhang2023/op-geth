@@ -130,6 +130,7 @@ var (
 
 	// reorg detail metrics
 	resetTimer                = metrics.NewRegisteredTimer("txpool/resettime", nil)
+	resetGapGauge             = metrics.NewRegisteredGauge("txpool/resetgap", nil)
 	promoteTimer              = metrics.NewRegisteredTimer("txpool/promotetime", nil)
 	demoteTimer               = metrics.NewRegisteredTimer("txpool/demotetime", nil)
 	reorgresetTimer           = metrics.NewRegisteredTimer("txpool/reorgresettime", nil)
@@ -1421,12 +1422,15 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 
 // runReorg runs reset and promoteExecutables on behalf of scheduleReorgLoop.
 func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
+	// block number gap between reorgs when reset != nil
+	var newNum, oldNum, currNum uint64
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
 		if reset != nil {
 			reorgresetTimer.UpdateSince(t0)
+			resetGapGauge.Update(int64(newNum - currNum))
 			if reset.newHead != nil {
-				log.Info("Transaction pool reorged", "from", reset.oldHead.Number.Uint64(), "to", reset.newHead.Number.Uint64())
+				log.Info("Transaction pool reorged", "newNum", newNum, "oldNum", oldNum, "currNum", currNum, "from", reset.oldHead.Number.Uint64(), "to", reset.newHead.Number.Uint64())
 			}
 		}
 	}(time.Now())
@@ -1442,6 +1446,15 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	pool.mu.Lock()
 	tl, t0 := time.Now(), time.Now()
 	if reset != nil {
+		if reset.newHead != nil {
+			newNum = reset.newHead.Number.Uint64()
+		}
+		if reset.oldHead != nil {
+			oldNum = reset.oldHead.Number.Uint64()
+		}
+		if currHead := pool.currentHead.Load(); currHead != nil {
+			currNum = currHead.Number.Uint64()
+		}
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		demoteAddrs = pool.reset(reset.oldHead, reset.newHead)
 		resetTimer.UpdateSince(t0)
