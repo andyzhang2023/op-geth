@@ -152,6 +152,10 @@ func TestTxpoolP2PParallel2(t *testing.T) {
 	runTxpoolCaseTps50000(t, 2)
 }
 
+func TestTxpoolP2PParallel4(t *testing.T) {
+	runTxpoolCaseTps50000(t, 4)
+}
+
 func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 	var pool *txpool.TxPool
 	var randomFrom, randomTo, genesisAlloc = prepareAddress(50000)
@@ -193,7 +197,7 @@ func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 	}
 	// generate txs at rate of 5000 txs per second
 	var addSleep time.Duration
-	go func() {
+	generateTxs := func(targetBN, tps int) {
 		for n := 0; n < targetBN*tps; {
 			t0 := time.Now()
 			// split txs into 128-size chunks
@@ -216,7 +220,10 @@ func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 			}
 		}
 		close(txs)
-	}()
+	}
+	for i := 0; i < 3; i++ {
+		go generateTxs(targetBN, tps)
+	}
 	// put txs into txpool
 	var addFailed uint64
 	parallel := func() {
