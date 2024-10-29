@@ -152,6 +152,9 @@ type BlockChain interface {
 
 	// StateAt returns a state database for a given root hash (generally the head).
 	StateAt(root common.Hash) (*state.StateDB, error)
+
+	// SubscribeBlockCommitEvent subscribes to new blocks being committed to the chain.
+	SubscribeBlockCommitEvent(ch chan<- core.BlockCommitEvent) event.Subscription
 }
 
 // Config are the configuration parameters of the transaction pool.
@@ -1361,12 +1364,17 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 		reset         *txpoolResetRequest
 		dirtyAccounts *accountSet
 		queuedEvents  = make(map[common.Address]*sortedMap)
+
+		committedBlock       *types.Block
+		blockCommitEvents    = make(chan core.BlockCommitEvent)
+		blockCommitEventsSub = pool.chain.SubscribeBlockCommitEvent(blockCommitEvents)
 	)
+	defer blockCommitEventsSub.Unsubscribe()
 	for {
 		// Launch next background reorg if needed
 		if curDone == nil && launchNextRun {
 			// Run the background reorg and announcements
-			go pool.runReorg(nextDone, reset, dirtyAccounts, queuedEvents)
+			go pool.runReorg(nextDone, reset, dirtyAccounts, queuedEvents, committedBlock)
 
 			// Prepare everything for the next round of reorg
 			curDone, nextDone = nextDone, make(chan struct{})
@@ -1377,6 +1385,11 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 		}
 
 		select {
+		case blockCommitEvents := <-blockCommitEvents:
+			// If a new block is committed, demote transactions that are no longer executable
+			committedBlock = blockCommitEvents.Block
+			launchNextRun = true
+
 		case req := <-pool.reqResetCh:
 			// Reset request: update head if request is already pending.
 			if reset == nil {
@@ -1421,7 +1434,7 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 }
 
 // runReorg runs reset and promoteExecutables on behalf of scheduleReorgLoop.
-func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap) {
+func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*sortedMap, committedBlock *types.Block) {
 	// block number gap between reorgs when reset != nil
 	var newNum, oldNum, currNum uint64
 	defer func(t0 time.Time) {
@@ -1435,6 +1448,13 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		}
 	}(time.Now())
 	defer close(done)
+	if committedBlock != nil {
+		pool.demoteNonceTooLow(committedBlock)
+		gasTip, baseFee := pool.gasTip.Load(), pool.priced.urgent.baseFee
+		go func() {
+			pool.pendingCache.sync2cache(pool, pool.createFilter(gasTip.ToBig(), baseFee))
+		}()
+	}
 
 	var promoteAddrs, demoteAddrs []common.Address
 	if dirtyAccounts != nil && reset == nil {
@@ -1896,6 +1916,67 @@ func (pool *LegacyPool) truncateQueue() {
 			queuedRateLimitMeter.Mark(1)
 		}
 	}
+}
+
+func (pool *LegacyPool) collectAddr(txs types.Transactions) []common.Address {
+	addrs := make(map[common.Address]struct{})
+	for _, tx := range txs {
+		if !pool.Filter(tx) {
+			continue
+		}
+		// it is heavy to get sender from tx, so we try to get it from the pool
+		if oldtx := pool.all.Get(tx.Hash()); oldtx != nil {
+			tx = oldtx
+		}
+		addr, err := types.Sender(pool.signer, tx)
+		//it might come from other pool, by other signer
+		if err != nil {
+			continue
+		}
+		addrs[addr] = struct{}{}
+	}
+	demoteAddrs := make([]common.Address, 0, len(addrs))
+	for addr := range addrs {
+		demoteAddrs = append(demoteAddrs, addr)
+	}
+	return demoteAddrs
+}
+
+func (pool *LegacyPool) demoteNonceTooLow(committed *types.Block) {
+	statedb, err := pool.chain.StateAt(committed.Header().Root)
+	if err != nil {
+		log.Error("Failed to get committed block state", "blockNumber", committed.NumberU64(), "blockHash", committed.Header().Hash().String(), "err", err)
+		return
+	}
+	if committed.NumberU64() <= pool.currentHead.Load().Number.Uint64() {
+		log.Info("Committed block is not newer than current head, no need to demote 'nonce too low'", "committed", committed.NumberU64(), "current", pool.currentHead.Load().Number.Uint64())
+		return
+	}
+
+	demoteAddrs := pool.collectAddr(committed.Transactions())
+
+	var demoted = 0
+	for _, addr := range demoteAddrs {
+		list := pool.pending[addr]
+		if list == nil {
+			continue
+		}
+		nonce := statedb.GetNonce(addr)
+
+		// Drop all transactions that are deemed too old (low nonce)
+		olds := list.Forward(nonce)
+		demoted += len(olds)
+		for _, tx := range olds {
+			hash := tx.Hash()
+			pool.all.Remove(hash)
+			log.Trace("Removed old pending transaction", "hash", hash)
+		}
+		if len(olds) > 0 {
+			pendingGauge.Dec(int64(len(olds)))
+			pool.pendingCache.del(olds, pool.signer)
+		}
+	}
+	log.Info("demote 'nonce too low' success", "demoted", demoted)
 }
 
 // demoteUnexecutables removes invalid and processed transactions from the pools

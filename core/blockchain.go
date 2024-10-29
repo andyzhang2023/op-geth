@@ -262,6 +262,9 @@ type BlockChain struct {
 	scope         event.SubscriptionScope
 	genesisBlock  *types.Block
 
+	// event that a block is committed(state got ready)
+	blockCommitFeed event.Feed
+
 	// This mutex synchronizes chain write operations.
 	// Readers don't need to take it, they can just read the database.
 	chainmu *syncx.ClosableMutex
@@ -1480,6 +1483,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if err != nil {
 		return err
 	}
+	bc.blockCommitFeed.Send(BlockCommitEvent{Block: block})
 	stateCommitExternalTimer.UpdateSince(start)
 	log.Info("perf-trace writeBlockWithState stateCommit", "duration", common.PrettyDuration(time.Since(start)), "hash", block.Hash(), "number", block.NumberU64())
 
