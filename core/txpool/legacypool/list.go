@@ -669,7 +669,7 @@ func (l *pricedList) Discard(slots int, force bool) (types.Transactions, bool) {
 }
 
 func (l *pricedList) NeedReheap(currHead *types.Header) bool {
-	return l.currHead == nil || currHead == nil || currHead.Hash().Cmp(l.currHead.Hash()) != 0
+	return l.currHead == nil || currHead == nil || currHead != l.currHead
 }
 
 // Reheap forcibly rebuilds the heap based on the current remote transaction set.
