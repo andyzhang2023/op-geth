@@ -114,6 +114,7 @@ var (
 	getLocalsDurationTimer = metrics.NewRegisteredTimer("txpool/getlocals/time", nil)
 	// demote metrics
 	// demoteDuration measures how long time a demotion takes.
+	demotePeakGauge = metrics.NewRegisteredGauge("txpool/demote/peak", nil)
 	demoteTxMeter   = metrics.NewRegisteredMeter("txpool/demote/tx", nil)
 	resetDepthMeter = metrics.NewRegisteredMeter("txpool/reset/depth", nil) //reorg depth of blocks which causes demote
 
@@ -1499,7 +1500,9 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
-	reorgresetNoblockingTimer.UpdateSince(tl)
+	if reset != nil {
+		reorgresetNoblockingTimer.UpdateSince(tl)
+	}
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
@@ -1900,9 +1903,9 @@ func (pool *LegacyPool) demoteUnexecutables(demoteAddrs []common.Address) {
 			demoteAddrs = append(demoteAddrs, addr)
 		}
 	}
-	demoteTxMeter.Mark(int64(len(demoteAddrs)))
 
 	var removed = 0
+	var demoted = 0
 	// Iterate over all accounts and demote any non-executable transactions
 	gasLimit := txpool.EffectiveGasLimit(pool.chainconfig, pool.currentHead.Load().GasLimit, pool.config.EffectiveGasCeil)
 	for _, addr := range demoteAddrs {
@@ -1938,6 +1941,7 @@ func (pool *LegacyPool) demoteUnexecutables(demoteAddrs []common.Address) {
 			// Internal shuffle shouldn't touch the lookup set.
 			pool.enqueueTx(hash, tx, false, false)
 		}
+		demoted += len(olds)
 		dropPendingCache = append(dropPendingCache, olds...)
 		dropPendingCache = append(dropPendingCache, invalids...)
 		dropPendingCache = append(dropPendingCache, drops...)
@@ -1969,6 +1973,8 @@ func (pool *LegacyPool) demoteUnexecutables(demoteAddrs []common.Address) {
 		removed += len(dropPendingCache)
 	}
 	pool.priced.Removed(removed)
+	demoteTxMeter.Mark(int64(demoted))
+	demotePeakGauge.Update(int64(demoted))
 }
 
 // addressByHeartbeat is an account address tagged with its last activity timestamp.
