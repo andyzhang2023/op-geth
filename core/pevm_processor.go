@@ -129,7 +129,7 @@ func (p *PEVMProcessor) toConfirmTxIndexResult(txResult *PEVMTxResult) error {
 		// When we perform an unordered merge, we cannot conduct conflict checks
 		// and can only choose to trust that the DAG is correct and that conflicts do not exist.
 		if err := p.hasConflict(txResult); err != nil {
-			log.Info(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
+			log.Debug(fmt.Sprintf("HasConflict!! block: %d, txIndex: %d\n", txResult.txReq.block.NumberU64(), txResult.txReq.txIndex))
 			return err
 		}
 	}
@@ -281,6 +281,23 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 		log.Debug("pevm confirm", "txIndex", pr.txReq.txIndex)
 		return p.confirmTxResult(statedb, gp, pr)
 	}, p.unorderedMerge)
+	//	err, txIndex := newPEVMScheduler(p.allTxReqs).Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
+	//		defer func(t0 time.Time) {
+	//			atomic.AddInt64(&executeDurations, time.Since(t0).Nanoseconds())
+	//		}(time.Now())
+	//
+	//		if err := buildMessage(pr, signer, header); err != nil {
+	//			return &PEVMTxResult{txReq: pr, err: err}
+	//		}
+	//		return p.executeInSlot(statedb, pr)
+	//	}, func(pr *PEVMTxResult) (err error) {
+	//		defer func(t0 time.Time) {
+	//			atomic.AddInt64(&confirmDurations, time.Since(t0).Nanoseconds())
+	//		}(time.Now())
+	//		log.Debug("pevm confirm", "txIndex", pr.txReq.txIndex)
+	//		return p.confirmTxResult(statedb, gp, pr)
+	//	})
+	//
 	parallelRunDuration := time.Since(start) - buildLevelsDuration
 	if err != nil {
 		tx := allTxs[txIndex]
@@ -298,6 +315,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 	pevmBuildLevelsTimer.Update(buildLevelsDuration)
 	pevmRunTimer.Update(parallelRunDuration)
 	log.Info("ProcessParallel tx all done", "block", header.Number, "usedGas", *usedGas,
+		"unorderMerge", p.unorderedMerge,
 		"parallelNum", ParallelNum(),
 		"buildLevelsDuration", buildLevelsDuration,
 		"parallelRunDuration", parallelRunDuration,

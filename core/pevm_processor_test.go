@@ -20,6 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -154,7 +155,12 @@ func InsertChain(bc *BlockChain, blocks []*types.Block) error {
 	return err
 }
 
-func BenchmarkAkaka(b *testing.B) {
+func TestAkaka(t *testing.T) {
+	glog := log.NewGlogHandler(log.NewTerminalHandlerWithLevel(os.Stderr, log.LevelInfo, false))
+	glog.Verbosity(log.LevelInfo)
+	logger := log.NewLogger(glog)
+	log.SetDefault(logger)
+
 	addrNum := 10000
 	// Configure and generate a sample block chain
 	funds := big.NewInt(1000000000000000)
@@ -169,12 +175,12 @@ func BenchmarkAkaka(b *testing.B) {
 			Config:   params.TestChainConfig,
 			Alloc:    genesisAlloc,
 			BaseFee:  big.NewInt(params.InitialBaseFee),
-			GasLimit: 500000000,
+			GasLimit: 5000000000,
 		}
 		signer = types.LatestSigner(gspec.Config)
 	)
 
-	_, blocks, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), 2, func(i int, block *BlockGen) {
+	_, blocks, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), 5, func(i int, block *BlockGen) {
 		block.SetCoinbase(common.Address{0x00})
 		txs := make([]*types.Transaction, len(addresses))
 		for i, addr := range addresses {
@@ -193,16 +199,13 @@ func BenchmarkAkaka(b *testing.B) {
 		}
 	})
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		archiveDb := rawdb.NewMemoryDatabase()
-		// Import the chain as an archive node for the comparison baseline
-		archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{EnableParallelExec: true}, nil, nil)
-		if n, err := archive.InsertChain(blocks); err != nil {
-			panic(fmt.Sprintf("failed to process block %d: %v", n, err))
-		}
-		archive.Stop()
+	archiveDb := rawdb.NewMemoryDatabase()
+	// Import the chain as an archive node for the comparison baseline
+	archive, _ := NewBlockChain(archiveDb, DefaultCacheConfigWithScheme(rawdb.PathScheme), gspec, nil, ethash.NewFaker(), vm.Config{EnableParallelExec: true}, nil, nil)
+	if n, err := archive.InsertChain(blocks); err != nil {
+		panic(fmt.Sprintf("failed to process block %d: %v", n, err))
 	}
+	archive.Stop()
 }
 
 var cacheLock = sync.RWMutex{}
