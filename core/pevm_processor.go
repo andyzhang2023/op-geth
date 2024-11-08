@@ -265,7 +265,23 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 	parallelTxLevelsSizeMeter.Update(int64(len(txLevels)))
 	buildLevelsDuration := time.Since(start)
 	var executeDurations, confirmDurations int64 = 0, 0
-	err, txIndex := txLevels.Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
+	//err, txIndex := txLevels.Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
+	//	defer func(t0 time.Time) {
+	//		atomic.AddInt64(&executeDurations, time.Since(t0).Nanoseconds())
+	//	}(time.Now())
+
+	//	if err := buildMessage(pr, signer, header); err != nil {
+	//		return &PEVMTxResult{txReq: pr, err: err}
+	//	}
+	//	return p.executeInSlot(statedb, pr)
+	//}, func(pr *PEVMTxResult) (err error) {
+	//	defer func(t0 time.Time) {
+	//		atomic.AddInt64(&confirmDurations, time.Since(t0).Nanoseconds())
+	//	}(time.Now())
+	//	log.Debug("pevm confirm", "txIndex", pr.txReq.txIndex)
+	//	return p.confirmTxResult(statedb, gp, pr)
+	//}, p.unorderedMerge)
+	err, txIndex := newPEVMScheduler(p.allTxReqs).Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&executeDurations, time.Since(t0).Nanoseconds())
 		}(time.Now())
@@ -278,26 +294,16 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&confirmDurations, time.Since(t0).Nanoseconds())
 		}(time.Now())
+		if pr == nil {
+			panic("pr == nil")
+		}
+		if pr.txReq == nil {
+			panic("pr.txReq == nil")
+		}
 		log.Debug("pevm confirm", "txIndex", pr.txReq.txIndex)
 		return p.confirmTxResult(statedb, gp, pr)
-	}, p.unorderedMerge)
-	//	err, txIndex := newPEVMScheduler(p.allTxReqs).Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
-	//		defer func(t0 time.Time) {
-	//			atomic.AddInt64(&executeDurations, time.Since(t0).Nanoseconds())
-	//		}(time.Now())
-	//
-	//		if err := buildMessage(pr, signer, header); err != nil {
-	//			return &PEVMTxResult{txReq: pr, err: err}
-	//		}
-	//		return p.executeInSlot(statedb, pr)
-	//	}, func(pr *PEVMTxResult) (err error) {
-	//		defer func(t0 time.Time) {
-	//			atomic.AddInt64(&confirmDurations, time.Since(t0).Nanoseconds())
-	//		}(time.Now())
-	//		log.Debug("pevm confirm", "txIndex", pr.txReq.txIndex)
-	//		return p.confirmTxResult(statedb, gp, pr)
-	//	})
-	//
+	})
+
 	parallelRunDuration := time.Since(start) - buildLevelsDuration
 	if err != nil {
 		tx := allTxs[txIndex]

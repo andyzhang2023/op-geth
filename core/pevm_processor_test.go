@@ -180,7 +180,7 @@ func TestAkaka(t *testing.T) {
 		signer = types.LatestSigner(gspec.Config)
 	)
 
-	_, blocks, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), 5, func(i int, block *BlockGen) {
+	_, blocks, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), 20, func(i int, block *BlockGen) {
 		block.SetCoinbase(common.Address{0x00})
 		txs := make([]*types.Transaction, len(addresses))
 		for i, addr := range addresses {
