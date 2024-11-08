@@ -32,20 +32,27 @@ func newPEVMScheduler(allTx []*PEVMTxRequest) *PEVMScheduler {
 func (ps *PEVMScheduler) Run(execute func(*PEVMTxRequest) *PEVMTxResult, confirm func(*PEVMTxResult) error) (failed error, failedTxIndex int) {
 	var merged int32 = -1
 	var allNum = int32(len(ps.all))
-	var mergeLock sync.Mutex
+	var mergeLock int32 = 0
 	var merge = func() {
 		// lock the merge
-		mergeLock.Lock()
-		defer mergeLock.Unlock()
+		if !atomic.CompareAndSwapInt32(&mergeLock, 0, 1) {
+			return
+		}
+		defer atomic.CompareAndSwapInt32(&mergeLock, 1, 0)
 		for merged < allNum-1 {
 			i := merged + 1
 			job := ps.all[i]
+			if !job.lock() {
+				continue
+			}
 			executed := job.executed
 			if !executed {
+				job.unlock()
 				return
 			}
 			// skip the merged job
 			if job.merged {
+				job.unlock()
 				continue
 			}
 			res := job.res
@@ -70,6 +77,7 @@ func (ps *PEVMScheduler) Run(execute func(*PEVMTxRequest) *PEVMTxResult, confirm
 			}
 			job.merged = true
 			merged = i
+			job.unlock()
 		}
 	}
 	// run all transactions in parallel
