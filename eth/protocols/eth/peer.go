@@ -20,12 +20,18 @@ import (
 	"math/big"
 	"math/rand"
 	"sync"
+	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
+)
+
+var (
+	txEncodeTimer = metrics.NewRegisteredTimer("p2p/tx/encode/time", nil)
 )
 
 const (
@@ -196,7 +202,17 @@ func (p *Peer) SendTransactions(txs types.Transactions) error {
 	for _, tx := range txs {
 		p.knownTxs.Add(tx.Hash())
 	}
-	return p2p.Send(p.rw, TransactionsMsg, txs)
+	//return p2p.Send(p.rw, TransactionsMsg, txs)
+	data := txs
+	t0 := time.Now()
+	size, r, err := rlp.EncodeToReader(data)
+	if num := len(txs); num > 0 {
+		txEncodeTimer.Update(time.Since(t0) / time.Duration(num))
+	}
+	if err != nil {
+		return err
+	}
+	return p.rw.WriteMsg(p2p.Msg{Code: TransactionsMsg, Size: uint32(size), Payload: r})
 }
 
 // AsyncSendTransactions queues a list of transactions (by hash) to eventually

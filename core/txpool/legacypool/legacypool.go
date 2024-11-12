@@ -136,10 +136,8 @@ var (
 	truncateTimer             = metrics.NewRegisteredTimer("txpool/truncatetime", nil)
 	reorgresetNoblockingTimer = metrics.NewRegisteredTimer("txpool/noblocking/reorgresettime", nil)
 
-	//nonce too low
-	nonceTooLowHeaderTimer = metrics.NewRegisteredTimer("txpool/nonce/too/low/header/duration", nil)
-	nonceTooLowBlockTimer  = metrics.NewRegisteredTimer("txpool/nonce/too/low/block/duration", nil)
-	nonceTooLowTxMeter     = metrics.NewRegisteredMeter("txpool/nonce/too/low/tx", nil)
+	// latency of accessing state objects
+	accountReadsTimer = metrics.NewRegisteredTimer("txpool/account/readtime", nil)
 )
 
 // BlockChain defines the minimal set of methods needed to back a tx pool with
@@ -1488,6 +1486,9 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	pool.mu.Lock()
 	tl, t0 := time.Now(), time.Now()
 	if reset != nil {
+		if pool.currentState != nil {
+			accountReadsTimer.Update(pool.currentState.AccountReads)
+		}
 		// Reset from the old head to the new, rescheduling any reorged transactions
 		demoteAddrs = pool.reset(reset.oldHead, reset.newHead)
 		resetTimer.UpdateSince(t0)
@@ -1540,7 +1541,9 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
-	reorgresetNoblockingTimer.UpdateSince(tl)
+	if reset != nil {
+		reorgresetNoblockingTimer.UpdateSince(tl)
+	}
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
