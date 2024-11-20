@@ -281,7 +281,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb *state.StateDB, cfg 
 	//	log.Debug("pevm confirm", "txIndex", pr.txReq.txIndex)
 	//	return p.confirmTxResult(statedb, gp, pr)
 	//}, p.unorderedMerge)
-	err, txIndex := newPEVMScheduler(p.allTxReqs).Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
+	err, txIndex := newPEVMScheduler(p.allTxReqs, txDAG).Run(func(pr *PEVMTxRequest) (res *PEVMTxResult) {
 		defer func(t0 time.Time) {
 			atomic.AddInt64(&executeDurations, time.Since(t0).Nanoseconds())
 		}(time.Now())

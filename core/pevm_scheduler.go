@@ -21,10 +21,10 @@ type PEVMScheduler struct {
 	all []*PEVMJob
 }
 
-func newPEVMScheduler(allTx []*PEVMTxRequest) *PEVMScheduler {
+func newPEVMScheduler(allTx []*PEVMTxRequest, txdag types.TxDAG) *PEVMScheduler {
 	all := make([]*PEVMJob, len(allTx))
 	for i, tx := range allTx {
-		all[i] = &PEVMJob{tx: tx}
+		all[i] = &PEVMJob{tx: tx, dag: txdag}
 	}
 	return &PEVMScheduler{all: all}
 }
@@ -91,7 +91,7 @@ func (ps *PEVMScheduler) Run(execute func(*PEVMTxRequest) *PEVMTxResult, confirm
 			for merged < int32(len(ps.all))-1 && failed == nil {
 				for jIdx := merged + 1; jIdx < allNum; jIdx++ {
 					job := ps.all[jIdx]
-					job.execute(execute)
+					job.execute(execute, ps.all)
 					merge()
 				}
 			}
@@ -120,7 +120,32 @@ func (job *PEVMJob) unlock() {
 
 func (job *PEVMJob) dependencies() (txs []int, all bool) {
 	//return all dependencies of this job
-	return nil, false
+	if job.dag == nil {
+		return nil, false
+	}
+	dep := job.dag.TxDep(job.tx.txIndex)
+	switch true {
+	case dep != nil && dep.CheckFlag(types.ExcludedTxFlag),
+		dep != nil && dep.CheckFlag(types.NonDependentRelFlag):
+		// excluted tx, need to wait all txs to be merged
+		return nil, true
+
+	case dep == nil || len(dep.TxIndexes) == 0:
+		// dependent on none
+		return nil, false
+
+	case dep != nil && len(dep.TxIndexes) > 0:
+		// dependent on others
+		// findout the correct level that the tx should be put
+		depIndexes := make([]int, len(dep.TxIndexes))
+		for i, txIndex := range dep.TxIndexes {
+			depIndexes[i] = int(txIndex)
+		}
+		return depIndexes, false
+
+	default:
+		panic("unexpected case")
+	}
 }
 
 func (job *PEVMJob) readyToExecute(all []*PEVMJob) bool {
@@ -128,9 +153,13 @@ func (job *PEVMJob) readyToExecute(all []*PEVMJob) bool {
 	deps, execluded := job.dependencies()
 	// the execluted one
 	if execluded {
-		// @TODO
 		// should wait all txs[:jIdx-1] to be merged
-		return false
+		for i := job.tx.txIndex - 1; i >= 0; i-- {
+			if !all[i].merged {
+				return false
+			}
+		}
+		return true
 	} else if len(deps) != 0 && !allMerged(all, deps) {
 		// should wait all dependiences to be merged
 		return false
@@ -138,12 +167,12 @@ func (job *PEVMJob) readyToExecute(all []*PEVMJob) bool {
 	return true
 }
 
-func (job *PEVMJob) execute(execute func(*PEVMTxRequest) *PEVMTxResult) bool {
+func (job *PEVMJob) execute(execute func(*PEVMTxRequest) *PEVMTxResult, all []*PEVMJob) bool {
 	if !job.lock() {
 		return false
 	}
 	defer job.unlock()
-	if !job.executed && job.readyToExecute(nil) {
+	if !job.executed && job.readyToExecute(all) {
 		// execute the job
 		job.res = execute(job.tx)
 		job.executed = true
