@@ -566,7 +566,7 @@ func (pst *UncommittedDB) getDeletedObject(addr common.Address, maindb *StateDB)
 		return pst.cache[addr]
 	}
 	// it reads the cache from the maindb
-	obj := maindb.getDeletedStateObject(addr)
+	obj := maindb.getDeleteStateObjectWithoutUpdate(addr)
 	defer func() {
 		pst.reads.recordOnce(addr, copyObj(obj))
 	}()
@@ -609,26 +609,6 @@ func (pst *UncommittedDB) getOrNewObject(addr common.Address) *state {
 	return pst.cache.create(addr)
 }
 
-func (pst *UncommittedDB) getObjectWithCode(addr common.Address) *state {
-	obj := pst.getObject(addr)
-	if obj == nil {
-		return nil
-	}
-	if obj.codeIsLoaded() {
-		return obj
-	}
-	// try to load the code from maindb
-	deletedObject := pst.maindb.getStateObject(addr)
-	if deletedObject == nil {
-		return nil
-	}
-	code, codeHash := deletedObject.Code(), common.BytesToHash(deletedObject.CodeHash())
-	obj.code = code
-	obj.codeHash = codeHash[:]
-	obj.codeSize = len(code)
-	return obj
-}
-
 // getDeletedObjectWithCode return an object with code, and load the code from maindb if it is not loaded.
 func (pst *UncommittedDB) getDeletedObjectWithCode(addr common.Address, maindb *StateDB) (o *state) {
 	o = pst.getDeletedObject(addr, maindb)
@@ -640,7 +620,7 @@ func (pst *UncommittedDB) getDeletedObjectWithCode(addr common.Address, maindb *
 		return o
 	}
 	// load code from maindb
-	deletedObj := pst.maindb.getDeletedStateObject(addr)
+	deletedObj := pst.maindb.getDeleteStateObjectWithoutUpdate(addr)
 	var code = []byte{}
 	var codeHash = common.Hash{}
 	if deletedObj == nil {
@@ -668,7 +648,7 @@ func (pst *UncommittedDB) getDeletedObjectWithState(addr common.Address, maindb 
 	}
 	// first, load code from maindb and record the previous state
 	// we can't use getStateObject() here , because the state of deletedObj will be used for conflict check.
-	deletedObj := pst.maindb.getDeletedStateObject(addr)
+	deletedObj := pst.maindb.getDeleteStateObjectWithoutUpdate(addr)
 	if deletedObj != nil {
 		// record the previous state for conflict check.
 		pst.reads.recordKVOnce(addr, hash, deletedObj.GetState(hash))
@@ -731,7 +711,7 @@ func (s *state) markAllModified() {
 // check whether the state of current object is conflicted with the maindb
 func (s state) conflicts(maindb *StateDB) error {
 	addr := s.addr
-	obj := maindb.getDeletedStateObject(addr)
+	obj := maindb.getDeleteStateObjectWithoutUpdate(addr)
 	// created == true means it doen't exist in the maindb
 	if s.created != (obj == nil) {
 		return errors.New("conflict: created")

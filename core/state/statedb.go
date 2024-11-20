@@ -970,6 +970,20 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	return obj
 }
 
+// only used for parallel evm.
+func (s *StateDB) getDeleteStateObjectWithoutUpdate(addr common.Address) *stateObject {
+	// Prefer live objects if any is available
+	if obj, _ := s.getStateObjectFromStateObjects(addr); obj != nil {
+		return obj
+	}
+
+	data, ok := s.getStateObjectFromSnapshotOrTrie(addr)
+	if !ok {
+		return nil
+	}
+	return newObject(s, true, addr, data)
+}
+
 func (s *StateDB) setStateObject(object *stateObject) {
 	if s.isParallel {
 		if s.parallel.isSlotDB {
