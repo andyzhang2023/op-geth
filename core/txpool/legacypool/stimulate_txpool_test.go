@@ -153,7 +153,7 @@ func TestTxpoolP2PParallel2(t *testing.T) {
 }
 
 func TestTxpoolP2PParallel4(t *testing.T) {
-	runTxpoolCaseTps50000(t, 4)
+	runTxpoolCaseTps50000(t, 8)
 }
 
 func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
@@ -175,13 +175,14 @@ func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 		err      error
 	)
 	// init txpool
-	legacyPool := New(Config{GlobalSlots: 100000, GlobalQueue: 20000}, cm)
+	legacyPool := New(Config{GlobalSlots: 200000, GlobalQueue: 40000}, cm)
 
 	txPools := []txpool.SubPool{legacyPool}
 	pool, err = txpool.New(1, cm, txPools)
 	if err != nil {
 		t.Fatalf("Failed to create txpool: %v", err)
 	}
+	noncer := &cachedNoncer{pool: pool, cached: make(map[common.Address]uint64)}
 	var executeFailed uint64 = 0
 	cm.Gen = func(i int, block *core.BlockGen) {
 		txs := pool.Pending(txpool.PendingFilter{})
@@ -207,7 +208,7 @@ func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 				if i+batch > tps {
 					batch = tps - i
 				}
-				txs <- generateTxs(batch, pool, signer, baseFee, randomFrom, randomTo)
+				txs <- generateTxs(batch, noncer, signer, baseFee, randomFrom, randomTo)
 				i += batch
 				n += batch
 				currLoop += batch
@@ -221,7 +222,7 @@ func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 		}
 		close(txs)
 	}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 8; i++ {
 		go generateTxs(targetBN, tps)
 	}
 	// put txs into txpool
@@ -229,9 +230,17 @@ func runTxpoolCaseTps50000(t *testing.T, p2pParallel int) {
 	parallel := func() {
 		for tx := range txs {
 			errs := pool.Add(tx, false, false)
-			for _, err := range errs {
+			for i, err := range errs {
+				sender, serr := types.Sender(signer, tx[i])
+				if serr != nil {
+					panic("invalid sender")
+				}
 				if err != nil {
 					atomic.AddUint64(&addFailed, 1)
+					// clear noncer
+					noncer.clear(sender)
+				} else {
+					noncer.inc(sender)
 				}
 			}
 		}
@@ -285,13 +294,40 @@ func prepareAddress(addrNum int) (chan *keypair, chan common.Address, types.Gene
 	return randomFrom, randomTo, genesisAlloc
 }
 
-func generateTxs(num int, pool *txpool.TxPool, signer types.Signer, basefee *big.Int, randomFrom chan *keypair, randomTo chan common.Address) []*types.Transaction {
+type cachedNoncer struct {
+	pool   *txpool.TxPool
+	lock   sync.RWMutex
+	cached map[common.Address]uint64
+}
+
+func (cn *cachedNoncer) nonce(addr common.Address) uint64 {
+	cn.lock.Lock()
+	defer cn.lock.Unlock()
+	if _, ok := cn.cached[addr]; !ok {
+		cn.cached[addr] = cn.pool.Nonce(addr)
+	}
+	return cn.cached[addr]
+}
+
+func (cn *cachedNoncer) inc(addr common.Address) {
+	cn.lock.Lock()
+	defer cn.lock.Unlock()
+	cn.cached[addr]++
+}
+
+func (cn *cachedNoncer) clear(addr common.Address) {
+	cn.lock.Lock()
+	defer cn.lock.Unlock()
+	delete(cn.cached, addr)
+}
+
+func generateTxs(num int, noncer *cachedNoncer, signer types.Signer, basefee *big.Int, randomFrom chan *keypair, randomTo chan common.Address) []*types.Transaction {
 	txs := make([]*types.Transaction, num)
 	for i := 0; i < num; i++ {
 		// borrow an address
 		to := <-randomTo
 		from := <-randomFrom
-		tx, err := types.SignTx(types.NewTransaction(pool.Nonce(from.addr), to, big.NewInt(10), params.TxGas, basefee, nil), signer, from.key)
+		tx, err := types.SignTx(types.NewTransaction(noncer.nonce(from.addr), to, big.NewInt(10), params.TxGas, basefee, nil), signer, from.key)
 		if err != nil {
 			panic(err)
 		}
