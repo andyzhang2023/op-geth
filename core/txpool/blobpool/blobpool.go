@@ -1202,6 +1202,10 @@ func (p *BlobPool) Get(hash common.Hash) *types.Transaction {
 	return item
 }
 
+func (pool *BlobPool) AddFromAPI(tx *types.Transaction) error {
+	return pool.Add([]*types.Transaction{tx}, false, false)[0]
+}
+
 // Add inserts a set of blob transactions into the pool if they pass validation (both
 // consensus validity and pool restrictions).
 func (p *BlobPool) Add(txs []*types.Transaction, local bool, sync bool) []error {

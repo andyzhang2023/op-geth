@@ -21,6 +21,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -304,6 +305,8 @@ type LegacyPool struct {
 	changesSinceReorg int // A counter for how many drops we've performed in-between reorg.
 
 	l1CostFn txpool.L1CostFunc // To apply L1 costs as rollup, optional field, may be nil.
+
+	apiTxs chan *apiTx
 }
 
 type txpoolResetRequest struct {
@@ -333,6 +336,7 @@ func New(config Config, chain BlockChain) *LegacyPool {
 		reorgShutdownCh: make(chan struct{}),
 		initDoneCh:      make(chan struct{}),
 		pendingCache:    newCacheForMiner(),
+		apiTxs:          make(chan *apiTx, 128),
 	}
 	pool.locals = newAccountSet(pool.signer)
 	for _, addr := range config.Locals {
@@ -410,6 +414,10 @@ func (pool *LegacyPool) Init(gasTip uint64, head *types.Header, reserve txpool.A
 	}
 	pool.wg.Add(1)
 	go pool.loop()
+
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go pool.apiTxLoop()
+	}
 	return nil
 }
 
@@ -1178,6 +1186,56 @@ func (pool *LegacyPool) addRemotesSync(txs []*types.Transaction) []error {
 // This is like addRemotes with a single transaction, but waits for pool reorganization. Tests use this method.
 func (pool *LegacyPool) addRemoteSync(tx *types.Transaction) error {
 	return pool.Add([]*types.Transaction{tx}, false, true)[0]
+}
+
+func (pool *LegacyPool) AddFromAPI(tx *types.Transaction) error {
+	err := make(chan error, 1)
+	pool.apiTxs <- &apiTx{tx, err}
+	return <-err
+}
+
+type apiTx struct {
+	tx  *types.Transaction
+	err chan error
+}
+
+type apiTxs []*apiTx
+
+func (atxs apiTxs) unpack() []*types.Transaction {
+	txs := make([]*types.Transaction, len(atxs))
+	for i, atx := range atxs {
+		txs[i] = atx.tx
+	}
+	return txs
+}
+
+func (pool *LegacyPool) apiTxLoop() {
+	var cache []*apiTx
+	var lastDone chan error
+	for {
+		if lastDone == nil && len(cache) > 0 {
+			// start a new handle routine to add transactions into pool
+			lastDone = make(chan error)
+			temp := apiTxs(cache)
+			cache = nil
+			go func() {
+				defer close(lastDone)
+				errs := pool.Add(temp.unpack(), false, false)
+				for i, err := range errs {
+					temp[i].err <- err
+				}
+			}()
+		}
+		select {
+		case <-pool.reorgShutdownCh:
+			return
+		case <-lastDone:
+			lastDone = nil
+		case apiTx := <-pool.apiTxs:
+			// Add the transaction to the pool
+			cache = append(cache, apiTx)
+		}
+	}
 }
 
 // Add enqueues a batch of transactions into the pool if they are valid. Depending

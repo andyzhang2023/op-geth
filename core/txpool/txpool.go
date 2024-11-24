@@ -307,6 +307,16 @@ func (p *TxPool) Get(hash common.Hash) *types.Transaction {
 	return nil
 }
 
+func (p *TxPool) AddFromAPI(tx *types.Transaction) error {
+	for _, subpool := range p.subpools {
+		if subpool.Filter(tx) {
+			//@TODO: should make it more generic
+			return subpool.AddFromAPI(tx)
+		}
+	}
+	return core.ErrTxTypeNotSupported
+}
+
 // Add enqueues a batch of transactions into the pool if they are valid. Due
 // to the large transaction churn, add may postpone fully integrating the tx
 // to a later point to batch multiple ones together.
