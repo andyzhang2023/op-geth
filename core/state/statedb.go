@@ -65,8 +65,10 @@ type revision struct {
 type StateDB struct {
 	db         Database
 	prefetcher *triePrefetcher
+	trieLock   sync.Mutex
 	trie       Trie
 	noTrie     bool
+	hasherLock sync.Mutex
 	hasher     crypto.KeccakState
 	snaps      *snapshot.Tree    // Nil if snapshot is not available
 	snap       snapshot.Snapshot // Nil if snapshot is not available
@@ -90,7 +92,8 @@ type StateDB struct {
 
 	// This map holds 'live' objects, which will get modified while processing
 	// a state transition.
-	stateObjects         map[common.Address]*stateObject
+	//stateObjects         map[common.Address]*stateObject
+	stateObjects         sync.Map
 	stateObjectsPending  map[common.Address]struct{}            // State objects finalized but not yet written to the trie
 	stateObjectsDirty    map[common.Address]struct{}            // State objects modified in the current execution
 	stateObjectsDestruct map[common.Address]*types.StateAccount // State objects destructed in the block along with its previous value
@@ -129,20 +132,20 @@ type StateDB struct {
 	nextRevisionId int
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReads         time.Duration
-	AccountHashes        time.Duration
-	AccountUpdates       time.Duration
-	AccountCommits       time.Duration
-	StorageReads         time.Duration
-	StorageHashes        time.Duration
-	StorageUpdates       time.Duration
-	StorageCommits       time.Duration
-	SnapshotAccountReads time.Duration
-	SnapshotStorageReads time.Duration
-	SnapshotCommits      time.Duration
-	TrieDBCommits        time.Duration
-	TrieCommits          time.Duration
-	CodeCommits          time.Duration
+	AccountReads            time.Duration
+	AccountHashes           time.Duration
+	AccountUpdates          time.Duration
+	AccountCommits          time.Duration
+	StorageReads            time.Duration
+	StorageHashes           time.Duration
+	StorageUpdates          time.Duration
+	StorageCommits          time.Duration
+	SnapshotAccountReads    time.Duration
+	SnapshotStorageReads    time.Duration
+	SnapshotCommits         time.Duration
+	TrieDBCommits           time.Duration
+	TrieCommits             time.Duration
+	CodeCommits             time.Duration
 	UpdateStoragesRootTimer time.Duration
 	UpdateAccountRootTimer  time.Duration
 
@@ -170,7 +173,7 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) 
 		storages:             make(map[common.Hash]map[common.Hash][]byte),
 		accountsOrigin:       make(map[common.Address][]byte),
 		storagesOrigin:       make(map[common.Address]map[common.Hash][]byte),
-		stateObjects:         make(map[common.Address]*stateObject),
+		stateObjects:         sync.Map{},
 		stateObjectsPending:  make(map[common.Address]struct{}),
 		stateObjectsDirty:    make(map[common.Address]struct{}),
 		stateObjectsDestruct: make(map[common.Address]*types.StateAccount),
@@ -199,7 +202,7 @@ func NewStateDBByTrie(tr Trie, db Database, snaps *snapshot.Tree) (*StateDB, err
 		storages:             make(map[common.Hash]map[common.Hash][]byte),
 		accountsOrigin:       make(map[common.Address][]byte),
 		storagesOrigin:       make(map[common.Address]map[common.Hash][]byte),
-		stateObjects:         make(map[common.Address]*stateObject),
+		stateObjects:         sync.Map{},
 		stateObjectsPending:  make(map[common.Address]struct{}),
 		stateObjectsDirty:    make(map[common.Address]struct{}),
 		stateObjectsDestruct: make(map[common.Address]*types.StateAccount),
@@ -624,14 +627,17 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 // destructed object instead of wiping all knowledge about the state object.
 func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	// Prefer live objects if any is available
-	if obj := s.stateObjects[addr]; obj != nil {
-		return obj
+	if obj, _ := s.stateObjects.Load(addr); obj != nil {
+		return obj.(*stateObject)
 	}
 	// If no live objects are available, attempt to use snapshots
 	var data *types.StateAccount
 	if s.snap != nil {
 		start := time.Now()
-		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+		s.hasherLock.Lock()
+		h := crypto.HashData(s.hasher, addr.Bytes())
+		s.hasherLock.Unlock()
+		acc, err := s.snap.Account(h)
 		if metrics.EnabledExpensive {
 			s.SnapshotAccountReads += time.Since(start)
 		}
@@ -657,7 +663,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	if data == nil {
 		start := time.Now()
 		var err error
+		s.trieLock.Lock()
 		data, err = s.trie.GetAccount(addr)
+		s.trieLock.Unlock()
 		if metrics.EnabledExpensive {
 			s.AccountReads += time.Since(start)
 		}
@@ -676,7 +684,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 }
 
 func (s *StateDB) setStateObject(object *stateObject) {
-	s.stateObjects[object.Address()] = object
+	s.stateObjects.Store(object.Address(), object)
 }
 
 // getOrNewStateObject retrieves a state object or create a new state object if nil.
@@ -759,7 +767,7 @@ func (s *StateDB) Copy() *StateDB {
 		storages:             make(map[common.Hash]map[common.Hash][]byte),
 		accountsOrigin:       make(map[common.Address][]byte),
 		storagesOrigin:       make(map[common.Address]map[common.Hash][]byte),
-		stateObjects:         make(map[common.Address]*stateObject, len(s.journal.dirties)),
+		stateObjects:         sync.Map{},
 		stateObjectsPending:  make(map[common.Address]struct{}, len(s.stateObjectsPending)),
 		stateObjectsDirty:    make(map[common.Address]struct{}, len(s.journal.dirties)),
 		stateObjectsDestruct: make(map[common.Address]*types.StateAccount, len(s.stateObjectsDestruct)),
@@ -783,11 +791,12 @@ func (s *StateDB) Copy() *StateDB {
 		// and in the Finalise-method, there is a case where an object is in the journal but not
 		// in the stateObjects: OOG after touch on ripeMD prior to Byzantium. Thus, we need to check for
 		// nil
-		if object, exist := s.stateObjects[addr]; exist {
+		if obj, exist := s.stateObjects.Load(addr); exist {
 			// Even though the original object is dirty, we are not copying the journal,
 			// so we need to make sure that any side-effect the journal would have caused
 			// during a commit (or similar op) is already applied to the copy.
-			state.stateObjects[addr] = object.deepCopy(state)
+			object := obj.(*stateObject)
+			state.stateObjects.Store(addr, object.deepCopy(state))
 
 			state.stateObjectsDirty[addr] = struct{}{}   // Mark the copy dirty to force internal (code/state) commits
 			state.stateObjectsPending[addr] = struct{}{} // Mark the copy pending to force external (account) commits
@@ -798,14 +807,14 @@ func (s *StateDB) Copy() *StateDB {
 	// is empty. Thus, here we iterate over stateObjects, to enable copies
 	// of copies.
 	for addr := range s.stateObjectsPending {
-		if _, exist := state.stateObjects[addr]; !exist {
-			state.stateObjects[addr] = s.stateObjects[addr].deepCopy(state)
+		if obj, exist := state.stateObjects.Load(addr); !exist {
+			state.stateObjects.Store(addr, obj.(*stateObject).deepCopy(state))
 		}
 		state.stateObjectsPending[addr] = struct{}{}
 	}
 	for addr := range s.stateObjectsDirty {
-		if _, exist := state.stateObjects[addr]; !exist {
-			state.stateObjects[addr] = s.stateObjects[addr].deepCopy(state)
+		if obj, exist := state.stateObjects.Load(addr); !exist {
+			state.stateObjects.Store(addr, obj.(*stateObject).deepCopy(state))
 		}
 		state.stateObjectsDirty[addr] = struct{}{}
 	}
@@ -886,7 +895,8 @@ func (s *StateDB) GetRefund() uint64 {
 func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 	addressesToPrefetch := make([][]byte, 0, len(s.journal.dirties))
 	for addr := range s.journal.dirties {
-		obj, exist := s.stateObjects[addr]
+		val, exist := s.stateObjects.Load(addr)
+		obj := val.(*stateObject)
 		if !exist {
 			// ripeMD is 'touched' at block 1714175, in tx 0x1237f737031e40bcde4a8b7e717b2d15e3ecadfe49bb1bbc71ee9deb09c6fcf2
 			// That tx goes out of gas, and although the notion of 'touched' does not exist there, the
@@ -970,7 +980,8 @@ func (s *StateDB) AccountsIntermediateRoot() {
 	// first, giving the account prefetches just a few more milliseconds of time
 	// to pull useful data from disk.
 	for addr := range s.stateObjectsPending {
-		if obj := s.stateObjects[addr]; !obj.deleted {
+		if val, _ := s.stateObjects.Load(addr); val != nil && !val.(*stateObject).deleted {
+			obj := val.(*stateObject)
 			wg.Add(1)
 			tasks <- func() {
 				defer wg.Done()
@@ -1023,7 +1034,9 @@ func (s *StateDB) StateIntermediateRoot() common.Hash {
 
 	usedAddrs := make([][]byte, 0, len(s.stateObjectsPending))
 	for addr := range s.stateObjectsPending {
-		if obj := s.stateObjects[addr]; obj.deleted {
+		val, _ := s.stateObjects.Load(addr)
+		obj := val.(*stateObject)
+		if obj.deleted {
 			s.deleteStateObject(obj)
 			s.AccountDeleted += 1
 		} else {
@@ -1372,7 +1385,8 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 			}
 
 			for addr := range s.stateObjectsDirty {
-				if obj := s.stateObjects[addr]; !obj.deleted {
+				if val, _ := s.stateObjects.Load(addr); !val.(*stateObject).deleted {
+					obj := val.(*stateObject)
 					tasks <- func() {
 						// Write any storage changes in the state object to its storage trie
 						if !s.noTrie {
@@ -1458,7 +1472,8 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 			}
 			codeWriter := s.db.DiskDB().NewBatch()
 			for addr := range s.stateObjectsDirty {
-				if obj := s.stateObjects[addr]; !obj.deleted {
+				if val, _ := s.stateObjects.Load(addr); !val.(*stateObject).deleted {
+					obj := val.(*stateObject)
 					// Write any contract code associated with the state object
 					if obj.code != nil && obj.dirtyCode {
 						rawdb.WriteCode(codeWriter, common.BytesToHash(obj.CodeHash()), obj.code)
@@ -1624,11 +1639,11 @@ func (s *StateDB) SlotInAccessList(addr common.Address, slot common.Hash) (addre
 func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) map[common.Hash]struct{} {
 	ret := make(map[common.Hash]struct{}, len(set))
 	for addr := range set {
-		obj, exist := s.stateObjects[addr]
+		obj, exist := s.stateObjects.Load(addr)
 		if !exist {
 			ret[crypto.Keccak256Hash(addr[:])] = struct{}{}
 		} else {
-			ret[obj.addrHash] = struct{}{}
+			ret[obj.(*stateObject).addrHash] = struct{}{}
 		}
 	}
 	return ret

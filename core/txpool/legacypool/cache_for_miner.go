@@ -67,6 +67,12 @@ func (pc *cacheForMiner) del(txs types.Transactions, signer types.Signer) {
 	}
 }
 
+func (pc *cacheForMiner) size() int {
+	pc.txLock.Lock()
+	defer pc.txLock.Unlock()
+	return len(pc.pending)
+}
+
 func (pc *cacheForMiner) dump() map[common.Address]types.Transactions {
 	pending := make(map[common.Address]types.Transactions)
 	pc.txLock.Lock()
