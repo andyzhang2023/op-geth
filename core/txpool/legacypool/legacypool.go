@@ -491,7 +491,10 @@ func (pool *LegacyPool) loop() {
 				if pool.locals.contains(addr) {
 					return true
 				}
-				beat, _ := pool.beats.Load(addr)
+				beat, ok := pool.beats.Load(addr)
+				if !ok {
+					return true
+				}
 				if time.Since(beat.(time.Time)) > pool.config.Lifetime {
 					list := txs.Flatten()
 					for _, tx := range list {
