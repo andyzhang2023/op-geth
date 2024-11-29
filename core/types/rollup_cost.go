@@ -174,6 +174,9 @@ func NewL1CostFunc(config *params.ChainConfig, statedb StateGetter) L1CostFunc {
 			forBlock = blockTime
 			cachedFunc = selectFunc(blockTime)
 		}
+		if cachedFunc == nil {
+			return nil
+		}
 		fee, _ := cachedFunc(rollupCostData)
 		return fee
 	}
