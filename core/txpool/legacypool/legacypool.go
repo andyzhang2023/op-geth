@@ -1930,12 +1930,24 @@ func (pool *LegacyPool) truncatePending() {
 		// Equalize balances until all the same or below threshold
 		if len(offenders) > 1 {
 			// Calculate the equalization threshold for all current offenders
-			threshold := pool.pending.MustLoad(offender).Len()
+			txList, _ := pool.pending.Load(offender)
+			if txList == nil {
+				continue
+			}
+			threshold := txList.Len()
 
 			// Iteratively reduce all offenders until below limit or threshold reached
-			for pending > pool.config.GlobalSlots && pool.pending.MustLoad(offenders[len(offenders)-2]).Len() > threshold {
+			//for pending > pool.config.GlobalSlots && pool.pending.MustLoad(offenders[len(offenders)-2]).Len() > threshold {
+			for pending > pool.config.GlobalSlots {
+				lastOffender := offenders[len(offenders)-2]
+				if lf, _ := pool.pending.Load(lastOffender); lf == nil || lf.Len() <= threshold {
+					break
+				}
 				for i := 0; i < len(offenders)-1; i++ {
-					list := pool.pending.MustLoad(offenders[i])
+					list, ok := pool.pending.Load(offenders[i])
+					if !ok {
+						continue
+					}
 
 					caps := list.Cap(list.Len() - 1)
 					for _, tx := range caps {
@@ -1961,9 +1973,18 @@ func (pool *LegacyPool) truncatePending() {
 
 	// If still above threshold, reduce to limit or min allowance
 	if pending > pool.config.GlobalSlots && len(offenders) > 0 {
-		for pending > pool.config.GlobalSlots && uint64(pool.pending.MustLoad(offenders[len(offenders)-1]).Len()) > pool.config.AccountSlots {
+		lastOffender := offenders[len(offenders)-1]
+		//for pending > pool.config.GlobalSlots && uint64(pool.pending.MustLoad(lastOffender).Len()) > pool.config.AccountSlots {
+		for pending > pool.config.GlobalSlots {
+			list, _ := pool.pending.Load(lastOffender)
+			if list == nil || uint64(list.Len()) <= pool.config.AccountSlots {
+				break
+			}
 			for _, addr := range offenders {
-				list := pool.pending.MustLoad(addr)
+				list, _ := pool.pending.Load(addr)
+				if list == nil {
+					continue
+				}
 
 				caps := list.Cap(list.Len() - 1)
 				for _, tx := range caps {
@@ -2017,9 +2038,11 @@ func (pool *LegacyPool) truncateQueue() {
 	// Drop transactions until the total is below the limit or only locals remain
 	for drop := queued - pool.config.GlobalQueue; drop > 0 && len(addresses) > 0; {
 		addr := addresses[len(addresses)-1]
-		list := pool.queue.MustLoad(addr.address)
-
 		addresses = addresses[:len(addresses)-1]
+		list, _ := pool.queue.Load(addr.address)
+		if list == nil {
+			continue
+		}
 
 		// Drop all transactions if they are less than the overflow
 		if size := uint64(list.Len()); size <= drop {
