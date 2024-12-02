@@ -807,14 +807,18 @@ func (s *StateDB) Copy() *StateDB {
 	// is empty. Thus, here we iterate over stateObjects, to enable copies
 	// of copies.
 	for addr := range s.stateObjectsPending {
-		if obj, exist := state.stateObjects.Load(addr); !exist {
-			state.stateObjects.Store(addr, obj.(*stateObject).deepCopy(state))
+		if _, exist := state.stateObjects.Load(addr); !exist {
+			if obj, exist := s.stateObjects.Load(addr); exist {
+				state.stateObjects.Store(addr, obj.(*stateObject).deepCopy(state))
+			}
 		}
 		state.stateObjectsPending[addr] = struct{}{}
 	}
 	for addr := range s.stateObjectsDirty {
-		if obj, exist := state.stateObjects.Load(addr); !exist {
-			state.stateObjects.Store(addr, obj.(*stateObject).deepCopy(state))
+		if _, exist := state.stateObjects.Load(addr); !exist {
+			if obj, exist := s.stateObjects.Load(addr); exist {
+				state.stateObjects.Store(addr, obj.(*stateObject).deepCopy(state))
+			}
 		}
 		state.stateObjectsDirty[addr] = struct{}{}
 	}
@@ -896,7 +900,6 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 	addressesToPrefetch := make([][]byte, 0, len(s.journal.dirties))
 	for addr := range s.journal.dirties {
 		val, exist := s.stateObjects.Load(addr)
-		obj := val.(*stateObject)
 		if !exist {
 			// ripeMD is 'touched' at block 1714175, in tx 0x1237f737031e40bcde4a8b7e717b2d15e3ecadfe49bb1bbc71ee9deb09c6fcf2
 			// That tx goes out of gas, and although the notion of 'touched' does not exist there, the
@@ -906,6 +909,7 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			// Thus, we can safely ignore it here
 			continue
 		}
+		obj := val.(*stateObject)
 		if obj.selfDestructed || (deleteEmptyObjects && obj.empty()) {
 			obj.deleted = true
 
@@ -980,7 +984,8 @@ func (s *StateDB) AccountsIntermediateRoot() {
 	// first, giving the account prefetches just a few more milliseconds of time
 	// to pull useful data from disk.
 	for addr := range s.stateObjectsPending {
-		if val, _ := s.stateObjects.Load(addr); val != nil && !val.(*stateObject).deleted {
+		// obj should never be nil
+		if val, _ := s.stateObjects.Load(addr); !val.(*stateObject).deleted {
 			obj := val.(*stateObject)
 			wg.Add(1)
 			tasks <- func() {
