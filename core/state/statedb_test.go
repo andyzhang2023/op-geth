@@ -465,7 +465,7 @@ func forEachStorage(s *StateDB, addr common.Address, cb func(key, value common.H
 
 	for it.Next() {
 		key := common.BytesToHash(s.trie.GetKey(it.Key))
-		if value, dirty := so.dirtyStorage[key]; dirty {
+		if value, dirty := so.dirtyStorage.Load(key); dirty {
 			if !cb(key, value) {
 				return nil
 			}

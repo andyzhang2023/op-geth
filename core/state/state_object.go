@@ -40,21 +40,56 @@ func (c Code) String() string {
 	return string(c) //strings.Join(Disassemble(c), " ")
 }
 
-type Storage map[common.Hash]common.Hash
+type Storage struct {
+	data sync.Map // map[common.Hash]common.Hash
+}
 
-func (s Storage) String() (str string) {
-	for key, value := range s {
+func (s *Storage) Range(f func(key, val common.Hash) bool) {
+	s.data.Range(func(key, value interface{}) bool {
+		return f(key.(common.Hash), value.(common.Hash))
+	})
+}
+
+func (s *Storage) String() (str string) {
+	s.data.Range(func(key, value interface{}) bool {
 		str += fmt.Sprintf("%X : %X\n", key, value)
-	}
+		return true
+	})
 	return
 }
 
-func (s Storage) Copy() Storage {
-	cpy := make(Storage, len(s))
-	for key, value := range s {
-		cpy[key] = value
-	}
+func (s *Storage) Copy() Storage {
+	cpy := Storage{}
+	s.data.Range(func(key, value interface{}) bool {
+		cpy.data.Store(key, value)
+		return true
+	})
 	return cpy
+}
+
+func (s *Storage) Load(key common.Hash) (common.Hash, bool) {
+	val, ok := s.data.Load(key)
+	if !ok {
+		return common.Hash{}, false
+	}
+	return val.(common.Hash), true
+}
+
+func (s *Storage) Store(key, value common.Hash) {
+	s.data.Store(key, value)
+}
+
+func (s *Storage) Delete(key common.Hash) {
+	s.data.Delete(key)
+}
+
+func (s *Storage) Len() int {
+	var len int = 0
+	s.data.Range(func(key, value interface{}) bool {
+		len++
+		return true
+	})
+	return len
 }
 
 // stateObject represents an Ethereum account which is being modified.
@@ -114,9 +149,9 @@ func newObject(db *StateDB, address common.Address, acct *types.StateAccount) *s
 		addrHash:       crypto.Keccak256Hash(address[:]),
 		origin:         origin,
 		data:           *acct,
-		originStorage:  make(Storage),
-		pendingStorage: make(Storage),
-		dirtyStorage:   make(Storage),
+		originStorage:  Storage{},
+		pendingStorage: Storage{},
+		dirtyStorage:   Storage{},
 		created:        created,
 	}
 }
@@ -165,7 +200,7 @@ func (s *stateObject) getTrie() (Trie, error) {
 // GetState retrieves a value from the account storage trie.
 func (s *stateObject) GetState(key common.Hash) common.Hash {
 	// If we have a dirty value for this state entry, return it
-	value, dirty := s.dirtyStorage[key]
+	value, dirty := s.dirtyStorage.Load(key)
 	if dirty {
 		return value
 	}
@@ -176,10 +211,10 @@ func (s *stateObject) GetState(key common.Hash) common.Hash {
 // GetCommittedState retrieves a value from the committed account storage trie.
 func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 	// If we have a pending write or clean cached, return that
-	if value, pending := s.pendingStorage[key]; pending {
+	if value, pending := s.pendingStorage.Load(key); pending {
 		return value
 	}
-	if value, cached := s.originStorage[key]; cached {
+	if value, cached := s.originStorage.Load(key); cached {
 		return value
 	}
 	// If the object was destructed in *this* block (and potentially resurrected),
@@ -229,7 +264,7 @@ func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 		}
 		value.SetBytes(val)
 	}
-	s.originStorage[key] = value
+	s.originStorage.Store(key, value)
 	return value
 }
 
@@ -250,24 +285,27 @@ func (s *stateObject) SetState(key, value common.Hash) {
 }
 
 func (s *stateObject) setState(key, value common.Hash) {
-	s.dirtyStorage[key] = value
+	s.dirtyStorage.Store(key, value)
 }
 
 // finalise moves all dirty storage slots into the pending area to be hashed or
 // committed later. It is invoked at the end of every transaction.
 func (s *stateObject) finalise(prefetch bool) {
-	slotsToPrefetch := make([][]byte, 0, len(s.dirtyStorage))
-	for key, value := range s.dirtyStorage {
-		s.pendingStorage[key] = value
-		if value != s.originStorage[key] {
+	slotsToPrefetch := make([][]byte, 0, s.dirtyStorage.Len())
+	s.dirtyStorage.Range(func(key, value common.Hash) bool {
+		s.pendingStorage.Store(key, value)
+		original, _ := s.originStorage.Load(key)
+		if original != value {
 			slotsToPrefetch = append(slotsToPrefetch, common.CopyBytes(key[:])) // Copy needed for closure
 		}
-	}
+		return true
+	})
 	if s.db.prefetcher != nil && prefetch && len(slotsToPrefetch) > 0 && s.data.Root != types.EmptyRootHash {
 		s.db.prefetcher.prefetch(s.addrHash, s.data.Root, s.address, slotsToPrefetch)
 	}
-	if len(s.dirtyStorage) > 0 {
-		s.dirtyStorage = make(Storage)
+	// TODO: this is a temporary fix, it's not thread-safe yet.
+	if s.dirtyStorage.Len() > 0 {
+		s.dirtyStorage = Storage{}
 	}
 }
 
@@ -282,7 +320,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 	s.finalise(false)
 
 	// Short circuit if nothing changed, don't bother with hashing anything
-	if len(s.pendingStorage) == 0 {
+	if s.pendingStorage.Len() == 0 {
 		return s.trie, nil
 	}
 	// Track the amount of time wasted on updating the storage trie
@@ -301,13 +339,13 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		return nil, err
 	}
 	// Insert all the pending storage updates into the trie
-	usedStorage := make([][]byte, 0, len(s.pendingStorage))
+	usedStorage := make([][]byte, 0, s.pendingStorage.Len())
 	dirtyStorage := make(map[common.Hash][]byte)
 
-	for key, value := range s.pendingStorage {
-		// Skip noop changes, persist actual changes
-		if value == s.originStorage[key] {
-			continue
+	s.pendingStorage.Range(func(key, value common.Hash) bool {
+		ori, _ := s.originStorage.Load(key)
+		if value == ori {
+			return true
 		}
 		var v []byte
 		if value != (common.Hash{}) {
@@ -315,7 +353,9 @@ func (s *stateObject) updateTrie() (Trie, error) {
 			v = common.TrimLeftZeroes(value[:])
 		}
 		dirtyStorage[key] = v
-	}
+		return true
+	})
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -365,8 +405,8 @@ func (s *stateObject) updateTrie() (Trie, error) {
 			storage[khash] = encoded // encoded will be nil if it's deleted
 
 			// Track the original value of slot only if it's mutated first time
-			prev := s.originStorage[key]
-			s.originStorage[key] = common.BytesToHash(value) // fill back left zeroes by BytesToHash
+			prev, _ := s.originStorage.Load(key)
+			s.originStorage.Store(key, common.BytesToHash(value)) // fill back left zeroes by BytesToHash
 			if _, ok := origin[khash]; !ok {
 				if prev == (common.Hash{}) {
 					origin[khash] = nil // nil if it was not present previously
@@ -383,7 +423,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 	if s.db.prefetcher != nil {
 		s.db.prefetcher.used(s.addrHash, s.data.Root, usedStorage)
 	}
-	s.pendingStorage = make(Storage) // reset pending map
+	s.pendingStorage = Storage{} // reset pending map
 	return tr, nil
 }
 

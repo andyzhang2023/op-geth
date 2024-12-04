@@ -269,30 +269,39 @@ func compareStateObjects(so0, so1 *stateObject, t *testing.T) {
 		t.Fatalf("Code mismatch: have %v, want %v", so0.code, so1.code)
 	}
 
-	if len(so1.dirtyStorage) != len(so0.dirtyStorage) {
-		t.Errorf("Dirty storage size mismatch: have %d, want %d", len(so1.dirtyStorage), len(so0.dirtyStorage))
+	if so1.dirtyStorage.Len() != so0.dirtyStorage.Len() {
+		t.Errorf("Dirty storage size mismatch: have %d, want %d", so1.dirtyStorage.Len(), so0.dirtyStorage.Len())
 	}
-	for k, v := range so1.dirtyStorage {
-		if so0.dirtyStorage[k] != v {
-			t.Errorf("Dirty storage key %x mismatch: have %v, want %v", k, so0.dirtyStorage[k], v)
+	so1.dirtyStorage.Range(func(k, v common.Hash) bool {
+		val, _ := so0.dirtyStorage.Load(k)
+		if val != v {
+			t.Errorf("Dirty storage key %x mismatch: have %v, want %v", k, val, v)
 		}
-	}
-	for k, v := range so0.dirtyStorage {
-		if so1.dirtyStorage[k] != v {
+		return true
+	})
+	so0.dirtyStorage.Range(func(k, v common.Hash) bool {
+		val, _ := so1.dirtyStorage.Load(k)
+		if val != v {
 			t.Errorf("Dirty storage key %x mismatch: have %v, want none.", k, v)
 		}
+		return true
+	})
+	if so1.originStorage.Len() != so0.originStorage.Len() {
+		t.Errorf("Origin storage size mismatch: have %d, want %d", so1.originStorage.Len(), so0.originStorage.Len())
 	}
-	if len(so1.originStorage) != len(so0.originStorage) {
-		t.Errorf("Origin storage size mismatch: have %d, want %d", len(so1.originStorage), len(so0.originStorage))
-	}
-	for k, v := range so1.originStorage {
-		if so0.originStorage[k] != v {
-			t.Errorf("Origin storage key %x mismatch: have %v, want %v", k, so0.originStorage[k], v)
+	so1.originStorage.Range(func(k, v common.Hash) bool {
+		val, _ := so0.originStorage.Load(k)
+		if val != v {
+			t.Errorf("Origin storage key %x mismatch: have %v, want %v", k, val, v)
 		}
-	}
-	for k, v := range so0.originStorage {
-		if so1.originStorage[k] != v {
+		return true
+	})
+
+	so0.originStorage.Range(func(k, v common.Hash) bool {
+		val, _ := so1.originStorage.Load(k)
+		if val != v {
 			t.Errorf("Origin storage key %x mismatch: have %v, want none.", k, v)
 		}
-	}
+		return true
+	})
 }
