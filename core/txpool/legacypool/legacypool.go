@@ -295,9 +295,8 @@ type LegacyPool struct {
 }
 
 type transactionSet struct {
-	atomic sync.Mutex // this is an atomic lock for creating a new list
-	list   sync.Map
-	size   int
+	list sync.Map
+	size int64
 }
 
 func (ts *transactionSet) Range(f func(key, value interface{}) bool) {
@@ -318,22 +317,16 @@ func (ts *transactionSet) Load(addr common.Address) (*list, bool) {
 }
 
 func (ts *transactionSet) Remove(addr common.Address) {
-	ts.atomic.Lock()
-	defer ts.atomic.Unlock()
 	_, ok := ts.list.LoadAndDelete(addr)
 	if ok {
-		ts.size--
+		atomic.AddInt64(&ts.size, -1)
 	}
 }
 
 func (ts *transactionSet) LoadOrCreate(addr common.Address, stric bool) *list {
-	ts.atomic.Lock()
-	defer ts.atomic.Unlock()
-	v, ok := ts.list.Load(addr)
-	if !ok {
-		v = newList(stric)
-		ts.list.Store(addr, v)
-		ts.size++
+	v, exists := ts.list.LoadOrStore(addr, newList(stric))
+	if !exists {
+		atomic.AddInt64(&ts.size, 1)
 	}
 	return v.(*list)
 }
