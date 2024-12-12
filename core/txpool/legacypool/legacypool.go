@@ -1517,6 +1517,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	var reorgCost, reorgLockedCost, demoteCost, promoteCost, waittime, truncatePending, truncateQueue, sendFeed time.Duration
 	var promoted []*types.Transaction
 	var demoted, sendFeedTxs int
+	var oldBlock, newBlock uint64 = 0, 0
 	defer func(t0 time.Time) {
 		reorgCost = time.Since(t0)
 		if reset != nil {
@@ -1531,7 +1532,8 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 			truncateResetPendingTimer.Update(truncatePending)
 			truncateResetQueueTimer.Update(truncateQueue)
 			sendFeedResetTxCount.Inc(int64(sendFeedTxs))
-			feedTimer.Update(sendFeed)
+			feedResetTimer.Update(sendFeed)
+			log.Info("txpool-trace reset finished", "oldHead", oldBlock, "newHead", newBlock, "demoted", demoted, "sendFeedTxs", sendFeedTxs, "promoted", len(promoted))
 		} else {
 			reorgCount.Inc(1)
 			reorgDurationTimer.Update(reorgCost)
@@ -1542,7 +1544,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 			truncatePendingTimer.Update(truncatePending)
 			truncateQueueTimer.Update(truncateQueue)
 			sendFeedTxCount.Inc(int64(sendFeedTxs))
-			feedResetTimer.Update(sendFeed)
+			feedTimer.Update(sendFeed)
 		}
 	}(time.Now())
 	defer close(done)
@@ -1554,7 +1556,6 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		// the flatten operation can be avoided.
 		promoteAddrs = dirtyAccounts.flatten()
 	}
-	var oldBlock, newBlock uint64 = 0, 0
 	tw := time.Now()
 	if reset != nil {
 		if reset.oldHead != nil {
