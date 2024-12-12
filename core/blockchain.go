@@ -1702,6 +1702,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 	defer func() {
 		if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
 			bc.chainHeadFeed.Send(ChainHeadEvent{lastCanon})
+			log.Info("txpool-trace send ChainHeadEvent", "hash", lastCanon.Hash(), "number", lastCanon.NumberU64())
 		}
 	}()
 	// Start the parallel header verifier
@@ -1723,7 +1724,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 	} else {
 		block, err = it.next()
 	}
-	log.Info("perf-trace InsertChain it.next", "duration", common.PrettyDuration(time.Since(traceStart)), "hash", chain[0].Header().Hash(), "number", chain[0].NumberU64())
+	log.Info("perf-trace txpool-trace InsertChain it.next", "duration", common.PrettyDuration(time.Since(traceStart)), "hash", chain[0].Header().Hash(), "number", chain[0].NumberU64())
 
 	// Left-trim all the known blocks that don't need to build snapshot
 	if bc.skipBlock(err, it) {
@@ -2547,7 +2548,7 @@ func (bc *BlockChain) SetCanonical(head *types.Block) (common.Hash, error) {
 	if timestamp := time.Unix(int64(head.Time()), 0); time.Since(timestamp) > time.Minute {
 		context = append(context, []interface{}{"age", common.PrettyAge(timestamp)}...)
 	}
-	log.Info("perf-trace Chain head was updated", context...)
+	log.Info("perf-trace txpool-trace Chain head was updated", context...)
 	return head.Hash(), nil
 }
 

@@ -1468,6 +1468,9 @@ func (pool *LegacyPool) scheduleReorgLoop() {
 		select {
 		case req := <-pool.reqResetCh:
 			// Reset request: update head if request is already pending.
+			if req.newHead != nil {
+				log.Info("txpool-trace receive reset request", "blockNumber", req.newHead.Number.Uint64())
+			}
 			if reset == nil {
 				reset = req
 			} else {
@@ -1551,7 +1554,17 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 		// the flatten operation can be avoided.
 		promoteAddrs = dirtyAccounts.flatten()
 	}
+	var oldBlock, newBlock uint64 = 0, 0
 	tw := time.Now()
+	if reset != nil {
+		if reset.oldHead != nil {
+			oldBlock = reset.oldHead.Number.Uint64()
+		}
+		if reset.newHead != nil {
+			newBlock = reset.newHead.Number.Uint64()
+		}
+		log.Info("txpool-trace try to reset txpool", "oldHead", oldBlock, "newHead", newBlock)
+	}
 	pool.mu.Lock()
 	tl, t0 := time.Now(), time.Now()
 	waittime = t0.Sub(tw)
@@ -1637,8 +1650,10 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 func (pool *LegacyPool) reset(oldHead, newHead *types.Header) (demoteAddrs []common.Address) {
 	// If we're reorging an old state, reinject all dropped transactions
 	var reinject types.Transactions
+	var txnum int = 0
 	// collect demote addresses
 	var collectAddr = func(txs types.Transactions) {
+		txnum += len(txs)
 		addrs := make(map[common.Address]struct{})
 		for _, tx := range txs {
 			if !pool.Filter(tx) {
@@ -1661,12 +1676,12 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) (demoteAddrs []com
 		}
 	}
 
-	var depth uint64 = 1
+	var depth, oldNum, newNum uint64 = 1, 0, 0
 
 	if oldHead != nil && oldHead.Hash() != newHead.ParentHash {
 		// If the reorg is too deep, avoid doing it (will happen during fast sync)
-		oldNum := oldHead.Number.Uint64()
-		newNum := newHead.Number.Uint64()
+		oldNum = oldHead.Number.Uint64()
+		newNum = newHead.Number.Uint64()
 
 		if depth = uint64(math.Abs(float64(oldNum) - float64(newNum))); depth > 64 {
 			log.Debug("Skipping deep transaction reorg", "depth", depth)
@@ -1745,7 +1760,7 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) (demoteAddrs []com
 		}
 	}
 	resetDepthMeter.Mark(int64(depth))
-	log.Info("reset block depth", "depth", depth)
+	log.Info("txpool-trace reset txpool", "depth", depth, "fromBlock", oldNum, "toBlock", newNum, "txs", txnum)
 	// Initialize the internal state to the current head
 	if newHead == nil {
 		newHead = pool.chain.CurrentBlock() // Special case during testing

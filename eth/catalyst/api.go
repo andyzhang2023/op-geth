@@ -264,6 +264,7 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 	// Check whether we have the block yet in our database or not. If not, we'll
 	// need to either trigger a sync, or to reject this forkchoice update for a
 	// reason.
+	log.Info("txpool-trace forkchoiceUpdate", "blockHash", update.HeadBlockHash)
 	block := api.eth.BlockChain().GetBlockByHash(update.HeadBlockHash)
 	if payloadAttributes == nil {
 		log.Info("perf-trace forkchoiceUpdate Head GetBlockByHash", "duration", common.PrettyDuration(time.Since(start)), "hash", update.HeadBlockHash)
@@ -592,7 +593,7 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 	start := time.Now()
 	defer func() {
 		newPayloadTimer.UpdateSince(start)
-		log.Info("perf-trace newPayload", "duration", common.PrettyDuration(time.Since(start)), "hash", params.BlockHash, "number", params.Number)
+		log.Info("perf-trace txpool-trace newPayload", "duration", common.PrettyDuration(time.Since(start)), "hash", params.BlockHash, "number", params.Number)
 	}()
 
 	// The locking here is, strictly, not required. Without these locks, this can happen:
@@ -622,7 +623,7 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 			return api.invalid(err, nil), nil
 		}
 	}
-	log.Info("perf-trace newPayload ExecutableDataToBlock", "duration", common.PrettyDuration(time.Since(start)), "hash", params.BlockHash, "number", params.Number)
+	log.Info("perf-trace txpool-trace newPayload ExecutableDataToBlock", "duration", common.PrettyDuration(time.Since(start)), "hash", params.BlockHash, "number", params.Number)
 
 	// Stash away the last update to warn the user if the beacon client goes offline
 	api.lastNewPayloadLock.Lock()
@@ -698,7 +699,7 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 
 		return api.invalid(err, parent.Header()), nil
 	}
-	log.Info("perf-trace newPayload InsertBlockWithoutSetHead", "duration", common.PrettyDuration(time.Since(start1)), "hash", params.BlockHash, "number", params.Number)
+	log.Info("perf-trace txpool-trace newPayload InsertBlockWithoutSetHead", "duration", common.PrettyDuration(time.Since(start1)), "hash", params.BlockHash, "number", params.Number)
 	// We've accepted a valid payload from the beacon client. Mark the local
 	// chain transitions to notify other subsystems (e.g. downloader) of the
 	// behavioral change.
