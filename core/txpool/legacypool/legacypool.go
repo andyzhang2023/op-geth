@@ -274,6 +274,11 @@ func (config *Config) sanitize() Config {
 	return conf
 }
 
+type AddTxReq struct {
+	Tx    *types.Transaction
+	ErrCh chan error
+}
+
 // LegacyPool contains all currently known transactions. Transactions
 // enter the pool when they are received from the network or submitted
 // locally. They exit the pool when they are included in the blockchain.
@@ -321,6 +326,8 @@ type LegacyPool struct {
 	changesSinceReorg int // A counter for how many drops we've performed in-between reorg.
 
 	l1CostFn txpool.L1CostFunc // To apply L1 costs as rollup, optional field, may be nil.
+
+	addTxCh chan AddTxReq
 }
 
 type txpoolResetRequest struct {
@@ -350,6 +357,7 @@ func New(config Config, chain BlockChain) *LegacyPool {
 		reorgShutdownCh: make(chan struct{}),
 		initDoneCh:      make(chan struct{}),
 		pendingCache:    newCacheForMiner(),
+		addTxCh:         make(chan AddTxReq, 20000),
 	}
 	if !config.EnableCache {
 		pool.pendingCache = newNoneCacheForMiner(pool)
@@ -424,6 +432,9 @@ func (pool *LegacyPool) Init(gasTip uint64, head *types.Header, reserve txpool.A
 	}
 	pool.wg.Add(1)
 	go pool.loop()
+
+	pool.wg.Add(1)
+	go pool.addTxLoop()
 	return nil
 }
 
@@ -1200,6 +1211,10 @@ func (pool *LegacyPool) addRemoteSync(tx *types.Transaction) error {
 	return pool.Add([]*types.Transaction{tx}, false, true)[0]
 }
 
+func (pool *LegacyPool) AddSingle(tx *types.Transaction, errCh chan error) {
+	pool.addTxCh <- AddTxReq{tx, errCh}
+}
+
 // Add enqueues a batch of transactions into the pool if they are valid. Depending
 // on the local flag, full pricing constraints will or will not be applied.
 //
@@ -1434,6 +1449,57 @@ func (pool *LegacyPool) queueTxEvent(tx *types.Transaction) {
 	select {
 	case pool.queueTxEventCh <- tx:
 	case <-pool.reorgShutdownCh:
+	}
+}
+
+func (pool *LegacyPool) addTxLoop() {
+	defer pool.wg.Done()
+	batchTxs := make([]AddTxReq, 0, 200)
+	batchTxsCh := make(chan []AddTxReq, 100)
+	lastAddTime := time.Now()
+	idleTicker := time.NewTicker(50 * time.Millisecond)
+
+	for i := 0; i < 25; i++ {
+		go func() {
+			for {
+				select {
+				case txReqs := <-batchTxsCh:
+					batchTxs := make([]*types.Transaction, 0, 200)
+					for _, txReq := range txReqs {
+						batchTxs = append(batchTxs, txReq.Tx)
+					}
+					errs := pool.Add(batchTxs, true, false)
+					for i, txReq := range txReqs {
+						txReq.ErrCh <- errs[i]
+					}
+				case <-pool.reorgShutdownCh:
+					return
+				}
+			}
+		}()
+	}
+
+	for {
+		select {
+		case txReq := <-pool.addTxCh:
+			if len(batchTxs) == 200 {
+				batchTxsCh <- batchTxs
+				batchTxs = make([]AddTxReq, 0, 200)
+				lastAddTime = time.Now()
+			}
+			batchTxs = append(batchTxs, txReq)
+		case <-idleTicker.C:
+			if time.Since(lastAddTime) >= 50*time.Millisecond {
+				if len(batchTxs) > 0 {
+					batchTxsCh <- batchTxs
+					batchTxs = make([]AddTxReq, 0, 200)
+					lastAddTime = time.Now()
+				}
+			}
+		case <-pool.reorgShutdownCh:
+			idleTicker.Stop()
+			return
+		}
 	}
 }
 

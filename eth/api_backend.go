@@ -321,7 +321,9 @@ func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *types.Transaction)
 	if b.disableTxPool {
 		return nil
 	}
-	return b.eth.txPool.Add([]*types.Transaction{signedTx}, true, false)[0]
+	errCh := make(chan error)
+	b.eth.txPool.AddSingle(signedTx, errCh)
+	return	<-errCh
 }
 
 func (b *EthAPIBackend) SendBundle(ctx context.Context, bundle *types.Bundle, originBundle *types.SendBundleArgs) error {

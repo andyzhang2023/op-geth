@@ -127,6 +127,7 @@ type SubPool interface {
 	// to the large transaction churn, add may postpone fully integrating the tx
 	// to a later point to batch multiple ones together.
 	Add(txs []*types.Transaction, local bool, sync bool) []error
+	AddSingle(tx *types.Transaction, errCh chan error)
 
 	// Pending retrieves all currently processable transactions, grouped by origin
 	// account and sorted by nonce.

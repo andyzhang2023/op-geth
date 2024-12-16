@@ -307,6 +307,14 @@ func (p *TxPool) Get(hash common.Hash) *types.Transaction {
 	return nil
 }
 
+func (p *TxPool) AddSingle(tx *types.Transaction, errCh chan error) {
+	for _, subpool := range p.subpools {
+		if subpool.Filter(tx) {
+			subpool.AddSingle(tx, errCh)
+		}
+	}
+}
+
 // Add enqueues a batch of transactions into the pool if they are valid. Due
 // to the large transaction churn, add may postpone fully integrating the tx
 // to a later point to batch multiple ones together.

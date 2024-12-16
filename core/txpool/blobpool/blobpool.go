@@ -1202,6 +1202,8 @@ func (p *BlobPool) Get(hash common.Hash) *types.Transaction {
 	return item
 }
 
+func (p *BlobPool) AddSingle(tx *types.Transaction, errCh chan error) {}
+
 // Add inserts a set of blob transactions into the pool if they pass validation (both
 // consensus validity and pool restrictions).
 func (p *BlobPool) Add(txs []*types.Transaction, local bool, sync bool) []error {

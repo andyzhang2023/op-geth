@@ -4,12 +4,13 @@ import (
 	"container/heap"
 	"context"
 	"errors"
-	mapset "github.com/deckarep/golang-set/v2"
-	"github.com/ethereum/go-ethereum/miner"
-	"github.com/ethereum/go-ethereum/rpc"
 	"math/big"
 	"sync"
 	"time"
+
+	mapset "github.com/deckarep/golang-set/v2"
+	"github.com/ethereum/go-ethereum/miner"
+	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -289,6 +290,8 @@ func (p *BundlePool) Get(hash common.Hash) *types.Transaction {
 	return nil
 }
 
+func (p *BundlePool) AddSingle(tx *types.Transaction, errCh chan error) {
+}
 // Add enqueues a batch of transactions into the pool if they are valid. Due
 // to the large transaction churn, add may postpone fully integrating the tx
 // to a later point to batch multiple ones together.
