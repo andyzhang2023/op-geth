@@ -159,7 +159,8 @@ var (
 	reorgCount           = metrics.NewRegisteredCounter("txpool/reorg/count", nil)
 	resetCount           = metrics.NewRegisteredCounter("txpool/reorg/reset/count", nil)
 
-	loopReportTimer = metrics.NewRegisteredTimer("txpool/loop/report", nil)
+	loopReportTimer         = metrics.NewRegisteredTimer("txpool/loop/report", nil)
+	loopPredropPendingTimer = metrics.NewRegisteredTimer("txpool/loop/predroppending", nil)
 )
 
 // BlockChain defines the minimal set of methods needed to back a tx pool with
@@ -321,6 +322,8 @@ type LegacyPool struct {
 	changesSinceReorg int // A counter for how many drops we've performed in-between reorg.
 
 	l1CostFn txpool.L1CostFunc // To apply L1 costs as rollup, optional field, may be nil.
+
+	preDropPendingCh chan []*types.Transaction
 }
 
 type txpoolResetRequest struct {
@@ -335,21 +338,22 @@ func New(config Config, chain BlockChain) *LegacyPool {
 
 	// Create the transaction pool with its initial settings
 	pool := &LegacyPool{
-		config:          config,
-		chain:           chain,
-		chainconfig:     chain.Config(),
-		signer:          types.LatestSigner(chain.Config()),
-		pending:         make(map[common.Address]*list, config.GlobalSlots),
-		queue:           make(map[common.Address]*list, config.GlobalQueue),
-		beats:           make(map[common.Address]time.Time),
-		all:             newLookup(),
-		reqResetCh:      make(chan *txpoolResetRequest),
-		reqPromoteCh:    make(chan *accountSet),
-		queueTxEventCh:  make(chan *types.Transaction),
-		reorgDoneCh:     make(chan chan struct{}),
-		reorgShutdownCh: make(chan struct{}),
-		initDoneCh:      make(chan struct{}),
-		pendingCache:    newCacheForMiner(),
+		config:           config,
+		chain:            chain,
+		chainconfig:      chain.Config(),
+		signer:           types.LatestSigner(chain.Config()),
+		pending:          make(map[common.Address]*list, config.GlobalSlots),
+		queue:            make(map[common.Address]*list, config.GlobalQueue),
+		beats:            make(map[common.Address]time.Time),
+		all:              newLookup(),
+		reqResetCh:       make(chan *txpoolResetRequest),
+		reqPromoteCh:     make(chan *accountSet),
+		queueTxEventCh:   make(chan *types.Transaction),
+		reorgDoneCh:      make(chan chan struct{}),
+		reorgShutdownCh:  make(chan struct{}),
+		initDoneCh:       make(chan struct{}),
+		pendingCache:     newCacheForMiner(),
+		preDropPendingCh: make(chan []*types.Transaction, 10),
 	}
 	if !config.EnableCache {
 		pool.pendingCache = newNoneCacheForMiner(pool)
@@ -451,6 +455,30 @@ func (pool *LegacyPool) loop() {
 	close(pool.initDoneCh)
 	for {
 		select {
+		case txs := <-pool.preDropPendingCh:
+			pool.mu.Lock()
+			start := time.Now()
+			dropCount := 0
+			for _, tx := range txs {
+				hash := tx.Hash()
+				existTx := pool.all.Get(hash)
+				if existTx == nil {
+					continue
+				}
+				addr, _ := types.Sender(pool.signer, tx)
+				if list := pool.pending[addr]; list != nil {
+					if removed := list.SimpleRemove(tx); removed {
+						pool.all.Remove(hash)
+						pool.priced.Removed(1)
+						pendingGauge.Dec(int64(1))
+						pool.pendingCounter -= 1
+						dropCount++
+					}
+				}
+			}
+			log.Info("txpool-trace pre drop pends", "dropped", dropCount, "remaining", pool.pendingCounter)
+			loopPredropPendingTimer.UpdateSince(start)
+			pool.mu.Unlock()
 		// Handle pool shutdown
 		case <-pool.reorgShutdownCh:
 			return
@@ -533,6 +561,10 @@ func (pool *LegacyPool) loop() {
 			}
 		}
 	}
+}
+
+func (p *LegacyPool) PreDropPending(txs []*types.Transaction) {
+	p.preDropPendingCh <- txs
 }
 
 // Close terminates the transaction pool.

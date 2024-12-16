@@ -438,6 +438,16 @@ func (l *list) Remove(tx *types.Transaction) (bool, types.Transactions) {
 	return true, nil
 }
 
+func (l *list) SimpleRemove(tx *types.Transaction) bool {
+	// Remove the transaction from the set
+	nonce := tx.Nonce()
+	if removed := l.txs.Remove(nonce); !removed {
+		return false
+	}
+	l.subTotalCost([]*types.Transaction{tx})
+	return true
+}
+
 // Ready retrieves a sequentially increasing list of transactions starting at the
 // provided nonce that is ready for processing. The returned transactions will be
 // removed from the list.

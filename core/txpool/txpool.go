@@ -278,6 +278,12 @@ func (p *TxPool) loop(head *types.Header, chain BlockChain) {
 	errc <- nil
 }
 
+func (p *TxPool) PreDropPending(txs []*types.Transaction) {
+	for _, subpool := range p.subpools {
+		subpool.PreDropPending(txs)
+	}
+}
+
 // SetGasTip updates the minimum gas tip required by the transaction pool for a
 // new transaction, and drops all transactions below this threshold.
 func (p *TxPool) SetGasTip(tip *big.Int) {

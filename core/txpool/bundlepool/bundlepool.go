@@ -4,12 +4,13 @@ import (
 	"container/heap"
 	"context"
 	"errors"
-	mapset "github.com/deckarep/golang-set/v2"
-	"github.com/ethereum/go-ethereum/miner"
-	"github.com/ethereum/go-ethereum/rpc"
 	"math/big"
 	"sync"
 	"time"
+
+	mapset "github.com/deckarep/golang-set/v2"
+	"github.com/ethereum/go-ethereum/miner"
+	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -288,6 +289,8 @@ func (p *BundlePool) Has(hash common.Hash) bool {
 func (p *BundlePool) Get(hash common.Hash) *types.Transaction {
 	return nil
 }
+
+func (p *BundlePool) PreDropPending(txs []*types.Transaction) {}
 
 // Add enqueues a batch of transactions into the pool if they are valid. Due
 // to the large transaction churn, add may postpone fully integrating the tx
