@@ -79,6 +79,7 @@ var (
 		utils.TxPoolRejournalFlag,
 		utils.TxPoolPriceLimitFlag,
 		utils.TxPoolPriceBumpFlag,
+		utils.TxPoolDisablePricedFlag,
 		utils.TxPoolAccountSlotsFlag,
 		utils.TxPoolGlobalSlotsFlag,
 		utils.TxPoolAccountQueueFlag,

@@ -537,6 +537,59 @@ func (h *priceHeap) Pop() interface{} {
 	return x
 }
 
+type disabledPricedList struct {
+}
+
+func newDisablePricedList() *disabledPricedList {
+	return &disabledPricedList{}
+}
+
+func (d *disabledPricedList) Put(tx *types.Transaction, local bool) {
+}
+
+func (d *disabledPricedList) Removed(count int) {
+}
+
+func (d *disabledPricedList) Underpriced(tx *types.Transaction) bool {
+	return true
+}
+
+func (d *disabledPricedList) Discard(slots int, force bool) (types.Transactions, bool) {
+	return nil, true
+}
+
+func (d *disabledPricedList) NeedReheap(currHead *types.Header) bool {
+	return false
+}
+
+func (d *disabledPricedList) Reheap() {
+}
+
+func (d *disabledPricedList) SetBaseFee(baseFee *big.Int) {
+}
+
+func (d *disabledPricedList) SetHead(currHead *types.Header) {
+}
+
+func (d *disabledPricedList) GetBaseFee() *big.Int {
+	return nil
+}
+
+type pricedListInterface interface {
+	Put(tx *types.Transaction, local bool)
+	Removed(count int)
+	Underpriced(tx *types.Transaction) bool
+	Discard(slots int, force bool) (types.Transactions, bool)
+	NeedReheap(currHead *types.Header) bool
+	Reheap()
+	SetBaseFee(baseFee *big.Int)
+	SetHead(currHead *types.Header)
+	GetBaseFee() *big.Int
+}
+
+var _ pricedListInterface = (*pricedList)(nil)
+var _ pricedListInterface = (*disabledPricedList)(nil)
+
 // pricedList is a price-sorted heap to allow operating on transactions pool
 // contents in a price-incrementing way. It's built upon the all transactions
 // in txpool but only interested in the remote part. It means only remote transactions
@@ -703,4 +756,12 @@ func (l *pricedList) Reheap() {
 // necessary to call right before SetBaseFee when processing a new block.
 func (l *pricedList) SetBaseFee(baseFee *big.Int) {
 	l.urgent.baseFee = baseFee
+}
+
+func (l *pricedList) SetHead(currHead *types.Header) {
+	l.currHead = currHead
+}
+
+func (l *pricedList) GetBaseFee() *big.Int {
+	return l.urgent.baseFee
 }
