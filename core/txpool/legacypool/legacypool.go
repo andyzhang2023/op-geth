@@ -309,7 +309,8 @@ type LegacyPool struct {
 	pendingCounter int
 	queueCounter   int
 
-	pendingCache pendingCache //pending list cache for miner
+	pendingCache  pendingCache //pending list cache for miner
+	pendingFilter func(txs types.Transactions, addr common.Address) types.Transactions
 
 	reqResetCh      chan *txpoolResetRequest
 	reqPromoteCh    chan *accountSet
@@ -395,6 +396,10 @@ func (pool *LegacyPool) Init(gasTip uint64, head *types.Header, reserve txpool.A
 	// Set the basic pool parameters
 	pool.gasTip.Store(uint256.NewInt(gasTip))
 
+	// set dumper
+	pool.pendingFilter = pool.createFilter(pool.gasTip.Load().ToBig(), head.BaseFee)
+	pool.pendingCache.sync2cache(pool, pool.pendingFilter)
+
 	// Initialize the state with head block, or fallback to empty one in
 	// case the head state is not available (might occur when node is not
 	// fully synced).
@@ -429,7 +434,40 @@ func (pool *LegacyPool) Init(gasTip uint64, head *types.Header, reserve txpool.A
 	}
 	pool.wg.Add(1)
 	go pool.loop()
+	go pool.loopOfSync()
 	return nil
+}
+
+func (pool *LegacyPool) loopOfSync() {
+	ticker := time.NewTicker(400 * time.Millisecond)
+	for {
+		select {
+		case <-pool.reorgShutdownCh:
+			return
+		case <-ticker.C:
+			gasTip := pool.gasTip.Load()
+			currHead := pool.currentHead.Load()
+			if gasTip == nil || currHead == nil {
+				continue
+			}
+			pool.pendingFilter = pool.createFilter(gasTip.ToBig(), currHead.BaseFee)
+			pool.pendingCache.sync2cache(pool, pool.pendingFilter)
+		}
+	}
+}
+
+func (pool *LegacyPool) createFilter(gasPrice, baseFee *big.Int) func(txs types.Transactions, addr common.Address) types.Transactions {
+	return func(txs types.Transactions, addr common.Address) types.Transactions {
+		if !pool.pendingCache.IsLocal(addr) {
+			for i, tx := range txs {
+				if tx.EffectiveGasTipIntCmp(gasPrice, baseFee) < 0 {
+					txs = txs[:i]
+					break
+				}
+			}
+		}
+		return txs
+	}
 }
 
 // loop is the transaction pool's main event loop, waiting for and reacting to
@@ -676,95 +714,57 @@ func (pool *LegacyPool) ContentFrom(addr common.Address) ([]*types.Transaction, 
 func (pool *LegacyPool) Pending(filter txpool.PendingFilter) map[common.Address][]*txpool.LazyTransaction {
 	// If only blob transactions are requested, this pool is unsuitable as it
 	// contains none, don't even bother.
+	empty := txpool.PendingFilter{}
+	if filter == empty {
+		// return all pending transactions, no filtering
+		return pool.filterOutStaled(pool.pendingCache.dump(false), pool.staledTransactions())
+	}
+	// If only blob transactions are requested, this pool is unsuitable as it
+	// contains none, don't even bother.
 	if filter.OnlyBlobTxs {
 		return nil
 	}
 	defer func(t0 time.Time) {
 		getPendingDurationTimer.Update(time.Since(t0))
 	}(time.Now())
-	// If only blob transactions are requested, this pool is unsuitable as it
-	// contains none, don't even bother.
-	if filter.OnlyBlobTxs {
-		return nil
-	}
+	// It is a bit tricky here, we don't do the filtering here.
+	return pool.filterOutStaled(pool.pendingCache.dump(true), pool.staledTransactions())
+}
 
-	// Convert the new uint256.Int types to the old big.Int ones used by the legacy pool
-	var (
-		minTipBig  *big.Int
-		baseFeeBig *big.Int
+func (pool *LegacyPool) filterOutStaled(lazy map[common.Address][]*txpool.LazyTransaction, staled map[common.Hash]struct{}) map[common.Address][]*txpool.LazyTransaction {
+	if len(staled) == 0 {
+		return lazy
+	}
+	for addr, txs := range lazy {
+		var nonceTooLow int = -1
+		for i, tx := range txs {
+			if _, ok := staled[tx.Tx.Hash()]; ok {
+				// staled transaction
+				nonceTooLow = i
+				continue
+			}
+			// only lower-nonce transaction would be a potential staled transaction, so it means no staled transaction left any more now
+			break
+		}
+		if nonceTooLow != -1 {
+			// filter out the staled transactions
+			lazy[addr] = txs[nonceTooLow+1:]
+		}
+	}
+	return lazy
+}
 
-		blockNumber        uint64        = 0
-		blockHash          common.Hash   = common.Hash{}
-		nonceTooLowCount                 = 0
-		currBlockDuration  time.Duration = 0
-		currHeaderDuration time.Duration = 0
-		txHashesDuration   time.Duration = 0
-		staled                           = make(map[common.Hash]struct{})
-	)
-	defer func() {
-		log.Info("perf-trace  Pending() nonce too low", "blockNumber", blockNumber, "blockHash", blockHash, "nonceTooLowCount", nonceTooLowCount, "staled", len(staled), "currHeaderDuration", currHeaderDuration, "currBlockDuration", currBlockDuration, "txHashesDuration", txHashesDuration)
-	}()
-	if filter.MinTip != nil {
-		minTipBig = filter.MinTip.ToBig()
-	}
-	if filter.BaseFee != nil {
-		baseFeeBig = filter.BaseFee.ToBig()
-	}
-	pending := make(map[common.Address][]*txpool.LazyTransaction, len(pool.pending))
-	t0 := time.Now()
+func (pool *LegacyPool) staledTransactions() map[common.Hash]struct{} {
+	var staled map[common.Hash]struct{}
 	if currHeader := pool.chain.CurrentBlock(); currHeader != nil {
-		currHeaderDuration = time.Since(t0)
-		blockNumber = currHeader.Number.Uint64()
-		blockHash = currHeader.Hash()
+		blockHash := currHeader.Hash()
 		currBlock := pool.chain.GetBlock(blockHash, currHeader.Number.Uint64())
-		currBlockDuration = time.Since(t0) - currHeaderDuration
 		staled = make(map[common.Hash]struct{}, len(currBlock.Transactions()))
 		for _, tx := range currBlock.Transactions() {
 			staled[tx.Hash()] = struct{}{}
 		}
-		txHashesDuration = time.Since(t0) - currBlockDuration - currHeaderDuration
 	}
-	for addr, txs := range pool.pendingCache.dump() {
-		// remove nonce too low transactions
-		if len(staled) > 0 {
-			noncetoolow := -1
-			for i, tx := range txs {
-				if _, hit := staled[tx.Hash()]; !hit {
-					break
-				}
-				noncetoolow = i
-			}
-			nonceTooLowCount += noncetoolow + 1
-			txs = txs[noncetoolow+1:]
-		}
-
-		// If the miner requests tip enforcement, cap the lists now
-		if minTipBig != nil && !pool.locals.contains(addr) {
-			for i, tx := range txs {
-				if tx.EffectiveGasTipIntCmp(minTipBig, baseFeeBig) < 0 {
-					txs = txs[:i]
-					break
-				}
-			}
-		}
-		if len(txs) > 0 {
-			lazies := make([]*txpool.LazyTransaction, len(txs))
-			for i := 0; i < len(txs); i++ {
-				lazies[i] = &txpool.LazyTransaction{
-					Pool:      pool,
-					Hash:      txs[i].Hash(),
-					Tx:        txs[i],
-					Time:      txs[i].Time(),
-					GasFeeCap: uint256.MustFromBig(txs[i].GasFeeCap()),
-					GasTipCap: uint256.MustFromBig(txs[i].GasTipCap()),
-					Gas:       txs[i].Gas(),
-					BlobGas:   txs[i].BlobGas(),
-				}
-			}
-			pending[addr] = lazies
-		}
-	}
-	return pending
+	return staled
 }
 
 // Locals retrieves the accounts currently considered local by the pool.
@@ -1610,6 +1610,11 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 				pool.priced.SetBaseFee(pendingBaseFee)
 			}
 		}
+		gasTip, baseFee := pool.gasTip.Load(), pendingBaseFee
+		go func() {
+			pool.pendingFilter = pool.createFilter(gasTip.ToBig(), baseFee)
+			pool.pendingCache.sync2cache(pool, pool.pendingFilter)
+		}()
 		// Update all accounts to the latest known pending nonce
 		nonces := make(map[common.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {
