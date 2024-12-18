@@ -735,10 +735,11 @@ func (pool *LegacyPool) filterOutStaled(lazy map[common.Address][]*txpool.LazyTr
 	if len(staled) == 0 {
 		return lazy
 	}
+	var filtered = make(map[common.Address][]*txpool.LazyTransaction, len(lazy))
 	for addr, txs := range lazy {
 		var nonceTooLow int = -1
 		for i, tx := range txs {
-			if _, ok := staled[tx.Tx.Hash()]; ok {
+			if _, ok := staled[tx.Hash]; ok {
 				// staled transaction
 				nonceTooLow = i
 				continue
@@ -748,10 +749,13 @@ func (pool *LegacyPool) filterOutStaled(lazy map[common.Address][]*txpool.LazyTr
 		}
 		if nonceTooLow != -1 {
 			// filter out the staled transactions
-			lazy[addr] = txs[nonceTooLow+1:]
+			txs = txs[nonceTooLow+1:]
+		}
+		if len(txs) > 0 {
+			filtered[addr] = txs
 		}
 	}
-	return lazy
+	return filtered
 }
 
 func (pool *LegacyPool) staledTransactions() map[common.Hash]struct{} {
