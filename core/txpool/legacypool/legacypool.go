@@ -180,8 +180,9 @@ type BlockChain interface {
 
 // Config are the configuration parameters of the transaction pool.
 type Config struct {
-	DisablePriced bool // disable pricedlist. Set as true only --txpool.disablepriced option is enabled
-	EnableCache   bool // enable pending cache for mining. Set as true only --mine option is enabled
+	EnableAsyncPriced bool // enable async pricedlist. Set as true only --txpool.enableasyncpriced option is enabled
+	DisablePriced     bool // disable pricedlist. Set as true only --txpool.disablepriced option is enabled, and would not be applied if --txpool.enableasyncpriced is enabled
+	EnableCache       bool // enable pending cache for mining. Set as true only --mine option is enabled
 
 	Locals    []common.Address // Addresses that should be treated by default as local
 	NoLocals  bool             // Whether local transaction handling should be disabled
@@ -361,7 +362,9 @@ func New(config Config, chain BlockChain) *LegacyPool {
 		pool.locals.add(addr)
 		pool.pendingCache.markLocal(addr)
 	}
-	if config.DisablePriced {
+	if config.EnableAsyncPriced {
+		pool.priced = newAsyncPricedList(pool.all)
+	} else if config.DisablePriced {
 		pool.priced = newDisablePricedList()
 	} else {
 		pool.priced = newPricedList(pool.all)
