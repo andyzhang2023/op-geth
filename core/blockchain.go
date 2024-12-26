@@ -1682,14 +1682,14 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 		return 0, nil
 	}
 
-	minerMode := false
-	if len(chain) == 1 {
-		block := chain[0]
-		_, receiptExist := bc.miningReceiptsCache.Get(block.Hash())
-		_, logExist := bc.miningTxLogsCache.Get(block.Hash())
-		_, stateExist := bc.miningStateCache.Get(block.Hash())
-		minerMode = receiptExist && logExist && stateExist
-	}
+	minerMode := true
+	// if len(chain) == 1 {
+	// 	block := chain[0]
+	// 	_, receiptExist := bc.miningReceiptsCache.Get(block.Hash())
+	// 	_, logExist := bc.miningTxLogsCache.Get(block.Hash())
+	// 	_, stateExist := bc.miningStateCache.Get(block.Hash())
+	// 	minerMode = receiptExist && logExist && stateExist
+	// }
 
 	// Start a parallel signature recovery (signer will fluke on fork transition, minimal perf loss)
 	SenderCacher.RecoverFromBlocks(types.MakeSigner(bc.chainConfig, chain[0].Number(), chain[0].Time()), chain)
@@ -1941,7 +1941,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 
 		vstart := time.Now()
 		// Async validate if minerMode
-		asyncValidateStateCh := make(chan error, 1)
+		// asyncValidateStateCh := make(chan error, 1)
 		if minerMode {
 			header := block.Header()
 			// Can not validate root concurrently
@@ -1951,9 +1951,9 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 				followupInterrupt.Store(true)
 				return it.index, err
 			}
-			go func() {
-				asyncValidateStateCh <- bc.validator.ValidateState(block, statedb, receipts, usedGas, true)
-			}()
+			// go func() {
+			// 	asyncValidateStateCh <- bc.validator.ValidateState(block, statedb, receipts, usedGas, true)
+			// }()
 		} else {
 			if err := bc.validator.ValidateState(block, statedb, receipts, usedGas, false); err != nil {
 				bc.reportBlock(block, receipts, err)
@@ -1998,11 +1998,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 		if err != nil {
 			return it.index, err
 		}
-		if minerMode {
-			if err := <-asyncValidateStateCh; err != nil {
-				panic(fmt.Errorf("self mined block(hash: %x number %v) async verify state err: %w", block.Hash(), block.NumberU64(), err))
-			}
-		}
+		// if minerMode {
+		// 	if err := <-asyncValidateStateCh; err != nil {
+		// 		panic(fmt.Errorf("self mined block(hash: %x number %v) async verify state err: %w", block.Hash(), block.NumberU64(), err))
+		// 	}
+		// }
 		bc.CacheBlock(block.Hash(), block)
 		log.Info("perf-trace insertChain debug2", "duration", common.PrettyDuration(time.Since(wstart)), "hash", block.Hash())
 
