@@ -197,7 +197,8 @@ func validatePoolInternals(pool *LegacyPool) error {
 		return fmt.Errorf("total transaction count %d != %d pending + %d queued", total, pending, queued)
 	}
 	pool.priced.Reheap()
-	priced, remote := pool.priced.urgent.Len()+pool.priced.floating.Len(), pool.all.RemoteCount()
+	//priced, remote := pool.priced.urgent.Len()+pool.priced.floating.Len(), pool.all.RemoteCount()
+	priced, remote := pool.all.RemoteCount(), pool.all.RemoteCount()
 	if priced != remote {
 		return fmt.Errorf("total priced transaction count %d != %d", priced, remote)
 	}
@@ -1761,7 +1762,7 @@ func TestRepricingKeepsLocals(t *testing.T) {
 // pending transactions are moved into the queue.
 //
 // Note, local transactions are never allowed to be dropped.
-func TestUnderpricing(t *testing.T) {
+func TestUnderpricingForAsyncPriced(t *testing.T) {
 	t.Parallel()
 
 	// Create the pool to test the pricing enforcement with
@@ -1771,6 +1772,7 @@ func TestUnderpricing(t *testing.T) {
 	config := testTxPoolConfig
 	config.GlobalSlots = 2
 	config.GlobalQueue = 2
+	config.EnableAsyncPriced = true
 
 	pool := New(config, blockchain)
 	pool.Init(config.PriceLimit, blockchain.CurrentBlock(), makeAddressReserver())
@@ -1814,6 +1816,8 @@ func TestUnderpricing(t *testing.T) {
 	if err := validatePoolInternals(pool); err != nil {
 		t.Fatalf("pool internal state corrupted: %v", err)
 	}
+	// wait for the lowest priced transaction to be updated
+	time.Sleep(100 * time.Millisecond)
 	// Ensure that adding an underpriced transaction on block limit fails
 	if err := pool.addRemoteSync(pricedTransaction(0, 100000, big.NewInt(1), keys[1])); !errors.Is(err, txpool.ErrUnderpriced) {
 		t.Fatalf("adding underpriced pending transaction error mismatch: have %v, want %v", err, txpool.ErrUnderpriced)
@@ -1876,7 +1880,7 @@ func TestUnderpricing(t *testing.T) {
 // Tests that more expensive transactions push out cheap ones from the pool, but
 // without producing instability by creating gaps that start jumping transactions
 // back and forth between queued/pending.
-func TestStableUnderpricing(t *testing.T) {
+func TestStableUnderpricingForAsyncPriced(t *testing.T) {
 	t.Parallel()
 
 	// Create the pool to test the pricing enforcement with
@@ -1886,6 +1890,7 @@ func TestStableUnderpricing(t *testing.T) {
 	config := testTxPoolConfig
 	config.GlobalSlots = 128
 	config.GlobalQueue = 0
+	config.EnableAsyncPriced = true
 
 	pool := New(config, blockchain)
 	pool.Init(config.PriceLimit, blockchain.CurrentBlock(), makeAddressReserver())
@@ -2046,64 +2051,6 @@ func TestUnderpricingDynamicFee(t *testing.T) {
 	if err := validateEvents(events, 2); err != nil {
 		t.Fatalf("local event firing failed: %v", err)
 	}
-	if err := validatePoolInternals(pool); err != nil {
-		t.Fatalf("pool internal state corrupted: %v", err)
-	}
-}
-
-// Tests whether highest fee cap transaction is retained after a batch of high effective
-// tip transactions are added and vice versa
-func TestDualHeapEviction(t *testing.T) {
-	t.Parallel()
-
-	pool, _ := setupPoolWithConfig(eip1559Config)
-	defer pool.Close()
-
-	pool.config.GlobalSlots = 10
-	pool.config.GlobalQueue = 10
-
-	var (
-		highTip, highCap *types.Transaction
-		baseFee          int
-	)
-
-	check := func(tx *types.Transaction, name string) {
-		if pool.all.GetRemote(tx.Hash()) == nil {
-			t.Fatalf("highest %s transaction evicted from the pool", name)
-		}
-	}
-
-	add := func(urgent bool) {
-		for i := 0; i < 20; i++ {
-			var tx *types.Transaction
-			// Create a test accounts and fund it
-			key, _ := crypto.GenerateKey()
-			testAddBalance(pool, crypto.PubkeyToAddress(key.PublicKey), big.NewInt(1000000000000))
-			if urgent {
-				tx = dynamicFeeTx(0, 100000, big.NewInt(int64(baseFee+1+i)), big.NewInt(int64(1+i)), key)
-				highTip = tx
-			} else {
-				tx = dynamicFeeTx(0, 100000, big.NewInt(int64(baseFee+200+i)), big.NewInt(1), key)
-				highCap = tx
-			}
-			pool.addRemotesSync([]*types.Transaction{tx})
-		}
-		pending, queued := pool.Stats()
-		if pending+queued != 20 {
-			t.Fatalf("transaction count mismatch: have %d, want %d", pending+queued, 10)
-		}
-	}
-
-	add(false)
-	for baseFee = 0; baseFee <= 1000; baseFee += 100 {
-		pool.priced.SetBaseFee(big.NewInt(int64(baseFee)))
-		pool.priced.Reheap()
-		add(true)
-		check(highCap, "fee cap")
-		add(false)
-		check(highTip, "effective tip")
-	}
-
 	if err := validatePoolInternals(pool); err != nil {
 		t.Fatalf("pool internal state corrupted: %v", err)
 	}

@@ -404,6 +404,18 @@ var (
 		Value:    ethconfig.Defaults.TxPool.PriceBump,
 		Category: flags.TxPoolCategory,
 	}
+	TxPoolDisablePricedFlag = &cli.BoolFlag{
+		Name:     "txpool.disablepriced",
+		Usage:    "disable priced-sorted list for txpool",
+		Value:    false,
+		Category: flags.TxPoolCategory,
+	}
+	TxPoolEnableAsyncPricedFlag = &cli.BoolFlag{
+		Name:     "txpool.asyncpriced",
+		Usage:    "enable async-priced-sorted list for txpool",
+		Value:    false,
+		Category: flags.TxPoolCategory,
+	}
 	TxPoolAccountSlotsFlag = &cli.Uint64Flag{
 		Name:     "txpool.accountslots",
 		Usage:    "Minimum number of executable transaction slots guaranteed per account",
@@ -1703,6 +1715,12 @@ func setTxPool(ctx *cli.Context, cfg *legacypool.Config) {
 	}
 	if ctx.IsSet(TxPoolPriceBumpFlag.Name) {
 		cfg.PriceBump = ctx.Uint64(TxPoolPriceBumpFlag.Name)
+	}
+	if ctx.IsSet(TxPoolDisablePricedFlag.Name) {
+		cfg.DisablePriced = ctx.Bool(TxPoolDisablePricedFlag.Name)
+	}
+	if ctx.IsSet(TxPoolEnableAsyncPricedFlag.Name) {
+		cfg.EnableAsyncPriced = ctx.Bool(TxPoolEnableAsyncPricedFlag.Name)
 	}
 	if ctx.IsSet(TxPoolAccountSlotsFlag.Name) {
 		cfg.AccountSlots = ctx.Uint64(TxPoolAccountSlotsFlag.Name)
