@@ -118,7 +118,7 @@ func TestDiskLayerExternalInvalidationFullFlatten(t *testing.T) {
 		t.Fatalf("failed to merge diff layer onto disk: %v", err)
 	}
 	// Since the base layer was modified, ensure that data retrievals on the external reference fail
-	if acc, err := ref.Account(common.HexToHash("0x01")); err != ErrSnapshotStale {
+	if acc, err := ref.Account(common.HexToHash("0x01"), false); err != ErrSnapshotStale {
 		t.Errorf("stale reference returned account: %#x (err: %v)", acc, err)
 	}
 	if slot, err := ref.Storage(common.HexToHash("0xa1"), common.HexToHash("0xb1")); err != ErrSnapshotStale {
@@ -168,7 +168,7 @@ func TestDiskLayerExternalInvalidationPartialFlatten(t *testing.T) {
 		t.Fatalf("failed to merge accumulator onto disk: %v", err)
 	}
 	// Since the base layer was modified, ensure that data retrievals on the external reference fail
-	if acc, err := ref.Account(common.HexToHash("0x01")); err != ErrSnapshotStale {
+	if acc, err := ref.Account(common.HexToHash("0x01"), false); err != ErrSnapshotStale {
 		t.Errorf("stale reference returned account: %#x (err: %v)", acc, err)
 	}
 	if slot, err := ref.Storage(common.HexToHash("0xa1"), common.HexToHash("0xb1")); err != ErrSnapshotStale {
@@ -230,7 +230,7 @@ func TestDiffLayerExternalInvalidationPartialFlatten(t *testing.T) {
 		t.Fatalf("failed to flatten diff layer into accumulator: %v", err)
 	}
 	// Since the accumulator diff layer was modified, ensure that data retrievals on the external reference fail
-	if acc, err := ref.Account(common.HexToHash("0x01")); err != ErrSnapshotStale {
+	if acc, err := ref.Account(common.HexToHash("0x01"), false); err != ErrSnapshotStale {
 		t.Errorf("stale reference returned account: %#x (err: %v)", acc, err)
 	}
 	if slot, err := ref.Storage(common.HexToHash("0xa1"), common.HexToHash("0xb1")); err != ErrSnapshotStale {
@@ -272,14 +272,14 @@ func TestPostCapBasicDataAccess(t *testing.T) {
 
 	// checkExist verifies if an account exists in a snapshot
 	checkExist := func(layer *diffLayer, key string) error {
-		if data, _ := layer.Account(common.HexToHash(key)); data == nil {
+		if data, _ := layer.Account(common.HexToHash(key), false); data == nil {
 			return fmt.Errorf("expected %x to exist, got nil", common.HexToHash(key))
 		}
 		return nil
 	}
 	// shouldErr checks that an account access errors as expected
 	shouldErr := func(layer *diffLayer, key string) error {
-		if data, err := layer.Account(common.HexToHash(key)); err == nil {
+		if data, err := layer.Account(common.HexToHash(key), false); err == nil {
 			return fmt.Errorf("expected error, got data %x", data)
 		}
 		return nil
@@ -469,7 +469,7 @@ func TestReadStateDuringFlattening(t *testing.T) {
 		// Spin up a thread to read the account from the pre-created
 		// snapshot handler. It's expected to be blocked.
 		go func() {
-			account, _ := snap.Account(common.HexToHash("0xa1"))
+			account, _ := snap.Account(common.HexToHash("0xa1"), false)
 			result <- account
 		}()
 		select {

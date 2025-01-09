@@ -160,10 +160,10 @@ func TestMergeDelete(t *testing.T) {
 	child = child.Update(common.Hash{}, flopDrops(), flopAccs(), storage)
 	child = child.Update(common.Hash{}, flipDrops(), flipAccs(), storage)
 
-	if data, _ := child.Account(h1); data == nil {
+	if data, _ := child.Account(h1, false); data == nil {
 		t.Errorf("last diff layer: expected %x account to be non-nil", h1)
 	}
-	if data, _ := child.Account(h2); data != nil {
+	if data, _ := child.Account(h2, false); data != nil {
 		t.Errorf("last diff layer: expected %x account to be nil", h2)
 	}
 	if _, ok := child.destructSet[h1]; ok {
@@ -175,10 +175,10 @@ func TestMergeDelete(t *testing.T) {
 	// And flatten
 	merged := (child.flatten()).(*diffLayer)
 
-	if data, _ := merged.Account(h1); data == nil {
+	if data, _ := merged.Account(h1, false); data == nil {
 		t.Errorf("merged layer: expected %x account to be non-nil", h1)
 	}
-	if data, _ := merged.Account(h2); data != nil {
+	if data, _ := merged.Account(h2, false); data != nil {
 		t.Errorf("merged layer: expected %x account to be nil", h2)
 	}
 	if _, ok := merged.destructSet[h1]; !ok { // Note, drops stay alive until persisted to disk!
@@ -267,7 +267,7 @@ func BenchmarkSearch(b *testing.B) {
 	key := crypto.Keccak256Hash([]byte{0x13, 0x38})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		layer.AccountRLP(key)
+		layer.AccountRLP(key, false)
 	}
 }
 

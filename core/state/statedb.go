@@ -51,6 +51,11 @@ type revision struct {
 	journalIndex int
 }
 
+var (
+	DbgSnapAccount       *snapshot.Debugger = &snapshot.Debugger{}
+	DbgSnapAccountCrypto *snapshot.Debugger = &snapshot.Debugger{}
+)
+
 // StateDB structs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:
@@ -63,6 +68,7 @@ type revision struct {
 // must be created with new root and updated database for accessing post-
 // commit states.
 type StateDB struct {
+	Debug      bool
 	db         Database
 	prefetcher *triePrefetcher
 	trie       Trie
@@ -129,20 +135,20 @@ type StateDB struct {
 	nextRevisionId int
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReads         time.Duration
-	AccountHashes        time.Duration
-	AccountUpdates       time.Duration
-	AccountCommits       time.Duration
-	StorageReads         time.Duration
-	StorageHashes        time.Duration
-	StorageUpdates       time.Duration
-	StorageCommits       time.Duration
-	SnapshotAccountReads time.Duration
-	SnapshotStorageReads time.Duration
-	SnapshotCommits      time.Duration
-	TrieDBCommits        time.Duration
-	TrieCommits          time.Duration
-	CodeCommits          time.Duration
+	AccountReads            time.Duration
+	AccountHashes           time.Duration
+	AccountUpdates          time.Duration
+	AccountCommits          time.Duration
+	StorageReads            time.Duration
+	StorageHashes           time.Duration
+	StorageUpdates          time.Duration
+	StorageCommits          time.Duration
+	SnapshotAccountReads    time.Duration
+	SnapshotStorageReads    time.Duration
+	SnapshotCommits         time.Duration
+	TrieDBCommits           time.Duration
+	TrieCommits             time.Duration
+	CodeCommits             time.Duration
 	UpdateStoragesRootTimer time.Duration
 	UpdateAccountRootTimer  time.Duration
 
@@ -631,7 +637,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	var data *types.StateAccount
 	if s.snap != nil {
 		start := time.Now()
-		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+		hash := crypto.HashData(s.hasher, addr.Bytes())
+		DbgSnapAccountCrypto.Mark(time.Since(start), s.Debug)
+		acc, err := s.snap.Account(hash, s.Debug)
 		if metrics.EnabledExpensive {
 			s.SnapshotAccountReads += time.Since(start)
 		}

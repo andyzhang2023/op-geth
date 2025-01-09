@@ -367,7 +367,7 @@ func TestAccountIteratorTraversalValues(t *testing.T) {
 	head := snaps.Snapshot(common.HexToHash("0x09"))
 	for it.Next() {
 		hash := it.Hash()
-		want, err := head.AccountRLP(hash)
+		want, err := head.AccountRLP(hash, false)
 		if err != nil {
 			t.Fatalf("failed to retrieve expected account: %v", err)
 		}
@@ -389,7 +389,7 @@ func TestAccountIteratorTraversalValues(t *testing.T) {
 	it, _ = snaps.AccountIterator(common.HexToHash("0x09"), common.Hash{})
 	for it.Next() {
 		hash := it.Hash()
-		want, err := head.AccountRLP(hash)
+		want, err := head.AccountRLP(hash, false)
 		if err != nil {
 			t.Fatalf("failed to retrieve expected account: %v", err)
 		}
@@ -874,7 +874,7 @@ func BenchmarkAccountIteratorTraversal(b *testing.B) {
 			it := head.(*diffLayer).newBinaryAccountIterator()
 			for it.Next() {
 				got++
-				head.(*diffLayer).accountRLP(it.Hash(), 0)
+				head.(*diffLayer).accountRLP(it.Hash(), 0, false)
 			}
 			if exp := 200; got != exp {
 				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)
@@ -972,7 +972,7 @@ func BenchmarkAccountIteratorLargeBaselayer(b *testing.B) {
 			for it.Next() {
 				got++
 				v := it.Hash()
-				head.(*diffLayer).accountRLP(v, 0)
+				head.(*diffLayer).accountRLP(v, 0, false)
 			}
 			if exp := 2000; got != exp {
 				b.Errorf("iterator len wrong, expected %d, got %d", exp, got)

@@ -104,11 +104,11 @@ type Snapshot interface {
 
 	// Account directly retrieves the account associated with a particular hash in
 	// the snapshot slim data format.
-	Account(hash common.Hash) (*types.SlimAccount, error)
+	Account(hash common.Hash, debug bool) (*types.SlimAccount, error)
 
 	// AccountRLP directly retrieves the account RLP associated with a particular
 	// hash in the snapshot slim data format.
-	AccountRLP(hash common.Hash) ([]byte, error)
+	AccountRLP(hash common.Hash, debug bool) ([]byte, error)
 
 	// Storage directly retrieves the storage data associated with a particular hash,
 	// within a particular account.

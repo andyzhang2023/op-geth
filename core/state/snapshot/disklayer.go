@@ -19,6 +19,7 @@ package snapshot
 import (
 	"bytes"
 	"sync"
+	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
@@ -27,6 +28,13 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/triedb"
+)
+
+var (
+	DbgDiskAccount         *Debugger = &Debugger{}
+	DbgDiskAccountRLP      *Debugger = &Debugger{}
+	DbgDiskAccountRLPWait  *Debugger = &Debugger{}
+	DbgDiskAccountRLPRawDB *Debugger = &Debugger{}
 )
 
 // diskLayer is a low level persistent snapshot built on top of a key-value store.
@@ -76,8 +84,10 @@ func (dl *diskLayer) Stale() bool {
 
 // Account directly retrieves the account associated with a particular hash in
 // the snapshot slim data format.
-func (dl *diskLayer) Account(hash common.Hash) (*types.SlimAccount, error) {
-	data, err := dl.AccountRLP(hash)
+func (dl *diskLayer) Account(hash common.Hash, debug bool) (*types.SlimAccount, error) {
+	t0 := time.Now()
+	data, err := dl.AccountRLP(hash, debug)
+	DbgDiskAccount.Mark(time.Since(t0), debug)
 	if err != nil {
 		return nil, err
 	}
@@ -93,8 +103,13 @@ func (dl *diskLayer) Account(hash common.Hash) (*types.SlimAccount, error) {
 
 // AccountRLP directly retrieves the account RLP associated with a particular
 // hash in the snapshot slim data format.
-func (dl *diskLayer) AccountRLP(hash common.Hash) ([]byte, error) {
+func (dl *diskLayer) AccountRLP(hash common.Hash, debug bool) ([]byte, error) {
+	t0 := time.Now()
+	defer func(tall time.Time) {
+		DbgDiskAccountRLP.Mark(time.Since(t0), debug)
+	}(t0)
 	dl.lock.RLock()
+	DbgDiskAccountRLPWait.Mark(time.Since(t0), debug)
 	defer dl.lock.RUnlock()
 
 	// If the layer was flattened into, consider it invalid (any live reference to
@@ -117,7 +132,9 @@ func (dl *diskLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 		return blob, nil
 	}
 	// Cache doesn't contain account, pull from disk and cache for later
+	t0 = time.Now()
 	blob := rawdb.ReadAccountSnapshot(dl.diskdb, hash)
+	DbgDiskAccountRLPRawDB.Mark(time.Since(t0), debug)
 	dl.cache.Set(hash[:], blob)
 
 	snapshotCleanAccountMissMeter.Mark(1)

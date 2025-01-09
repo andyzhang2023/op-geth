@@ -108,9 +108,9 @@ func TestDiskMerge(t *testing.T) {
 		},
 	}
 	base := snaps.Snapshot(baseRoot)
-	base.AccountRLP(accNoModCache)
-	base.AccountRLP(accModCache)
-	base.AccountRLP(accDelCache)
+	base.AccountRLP(accNoModCache, false)
+	base.AccountRLP(accModCache, false)
+	base.AccountRLP(accDelCache, false)
 	base.Storage(conNoModCache, conNoModCacheSlot)
 	base.Storage(conModCache, conModCacheSlot)
 	base.Storage(conDelCache, conDelCacheSlot)
@@ -145,7 +145,7 @@ func TestDiskMerge(t *testing.T) {
 	// assertAccount ensures that an account matches the given blob.
 	assertAccount := func(account common.Hash, data []byte) {
 		t.Helper()
-		blob, err := base.AccountRLP(account)
+		blob, err := base.AccountRLP(account, false)
 		if err != nil {
 			t.Errorf("account access (%x) failed: %v", account, err)
 		} else if !bytes.Equal(blob, data) {
@@ -310,7 +310,7 @@ func TestDiskPartialMerge(t *testing.T) {
 		// already covered by the disk snapshot, and errors out otherwise.
 		assertAccount := func(account common.Hash, data []byte) {
 			t.Helper()
-			blob, err := base.AccountRLP(account)
+			blob, err := base.AccountRLP(account, false)
 			if bytes.Compare(account[:], genMarker) > 0 && err != ErrNotCoveredYet {
 				t.Fatalf("test %d: post-marker (%x) account access (%x) succeeded: %x", i, genMarker, account, blob)
 			}

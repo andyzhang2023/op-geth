@@ -33,6 +33,12 @@ import (
 )
 
 var (
+	DbgDiffAccount         *Debugger = &Debugger{}
+	DbgDiffAccountRLP      *Debugger = &Debugger{}
+	DbgDiffAccountRLPWait  *Debugger = &Debugger{}
+	DbgDiffAccountRLPBloom *Debugger = &Debugger{}
+	DbgDiffAccountRLPDisk  *Debugger = &Debugger{}
+
 	// aggregatorMemoryLimit is the maximum size of the bottom-most diff layer
 	// that aggregates the writes from above until it's flushed into the disk
 	// layer.
@@ -249,8 +255,10 @@ func (dl *diffLayer) Stale() bool {
 
 // Account directly retrieves the account associated with a particular hash in
 // the snapshot slim data format.
-func (dl *diffLayer) Account(hash common.Hash) (*types.SlimAccount, error) {
-	data, err := dl.AccountRLP(hash)
+func (dl *diffLayer) Account(hash common.Hash, debug bool) (*types.SlimAccount, error) {
+	t0 := time.Now()
+	data, err := dl.AccountRLP(hash, debug)
+	DbgDiffAccount.Mark(time.Since(t0), debug)
 	if err != nil {
 		return nil, err
 	}
@@ -268,9 +276,15 @@ func (dl *diffLayer) Account(hash common.Hash) (*types.SlimAccount, error) {
 // hash in the snapshot slim data format.
 //
 // Note the returned account is not a copy, please don't modify it.
-func (dl *diffLayer) AccountRLP(hash common.Hash) ([]byte, error) {
+func (dl *diffLayer) AccountRLP(hash common.Hash, debug bool) ([]byte, error) {
 	// Check staleness before reaching further.
+	t0, tall := time.Now(), time.Now()
+	defer func(tall time.Time) {
+		DbgDiffAccountRLP.Mark(time.Since(tall), debug)
+	}(tall)
 	dl.lock.RLock()
+	DbgDiffAccountRLPWait.Mark(time.Since(t0), debug)
+	t0 = time.Now()
 	if dl.Stale() {
 		dl.lock.RUnlock()
 		return nil, ErrSnapshotStale
@@ -285,22 +299,26 @@ func (dl *diffLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 	if !hit {
 		origin = dl.origin // extract origin while holding the lock
 	}
+	DbgDiffAccountRLPBloom.Mark(time.Since(t0), debug)
 	dl.lock.RUnlock()
 
 	// If the bloom filter misses, don't even bother with traversing the memory
 	// diff layers, reach straight into the bottom persistent disk layer
 	if origin != nil {
 		snapshotBloomAccountMissMeter.Mark(1)
-		return origin.AccountRLP(hash)
+		t0 = time.Now()
+		res, err := origin.AccountRLP(hash, debug)
+		DbgDiffAccountRLPDisk.Mark(time.Since(t0), debug)
+		return res, err
 	}
 	// The bloom filter hit, start poking in the internal maps
-	return dl.accountRLP(hash, 0)
+	return dl.accountRLP(hash, 0, debug)
 }
 
 // accountRLP is an internal version of AccountRLP that skips the bloom filter
 // checks and uses the internal maps to try and retrieve the data. It's meant
 // to be used if a higher layer's bloom filter hit already.
-func (dl *diffLayer) accountRLP(hash common.Hash, depth int) ([]byte, error) {
+func (dl *diffLayer) accountRLP(hash common.Hash, depth int, debug bool) ([]byte, error) {
 	dl.lock.RLock()
 	defer dl.lock.RUnlock()
 
@@ -327,11 +345,11 @@ func (dl *diffLayer) accountRLP(hash common.Hash, depth int) ([]byte, error) {
 	}
 	// Account unknown to this diff, resolve from parent
 	if diff, ok := dl.parent.(*diffLayer); ok {
-		return diff.accountRLP(hash, depth+1)
+		return diff.accountRLP(hash, depth+1, debug)
 	}
 	// Failed to resolve through diff layers, mark a bloom error and use the disk
 	snapshotBloomAccountFalseHitMeter.Mark(1)
-	return dl.parent.AccountRLP(hash)
+	return dl.parent.AccountRLP(hash, debug)
 }
 
 // Storage directly retrieves the storage data associated with a particular hash,
