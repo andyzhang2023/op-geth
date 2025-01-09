@@ -18,6 +18,7 @@ package legacypool
 
 import (
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -45,13 +46,17 @@ func newNoncer(statedb *state.StateDB) *noncer {
 func (txn *noncer) get(addr common.Address) uint64 {
 	// We use mutex for get operation is the underlying
 	// state will mutate db even for read access.
+	t0 := time.Now()
 	txn.lock.Lock()
+	DbgMuNonceLockWait.Mark(time.Since(t0), true)
 	defer txn.lock.Unlock()
 
 	if _, ok := txn.nonces[addr]; !ok {
+		t0 = time.Now()
 		if nonce := txn.fallback.GetNonce(addr); nonce != 0 {
 			txn.nonces[addr] = nonce
 		}
+		DbgMuNonceFallback.Mark(time.Since(t0), true)
 	}
 	return txn.nonces[addr]
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
@@ -55,6 +56,22 @@ const (
 
 	// txReannoMaxNum is the maximum number of transactions a reannounce action can include.
 	txReannoMaxNum = 1024
+)
+
+var (
+	DbgMuNonce         *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuNonceLockWait *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuNonceFallback *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuAdd           *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuReorg         *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuEvict         *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuJournal       *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuReannounce    *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuReport        *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuStats         *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuSetGasTips    *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuContent       *snapshot.Debugger = &snapshot.Debugger{}
+	DbgMuContentFrom   *snapshot.Debugger = &snapshot.Debugger{}
 )
 
 var (
@@ -411,6 +428,7 @@ func (pool *LegacyPool) Init(gasTip uint64, head *types.Header, reserve txpool.A
 	if err != nil {
 		return err
 	}
+	statedb.Debug = true
 	pool.currentHead.Store(head)
 	pool.currentState = statedb
 	pool.pendingNonces = newNoncer(statedb)
@@ -435,7 +453,48 @@ func (pool *LegacyPool) Init(gasTip uint64, head *types.Header, reserve txpool.A
 	}
 	pool.wg.Add(1)
 	go pool.loop()
+	go pool.loopOfDebugger()
 	return nil
+}
+
+func (pool *LegacyPool) loopOfDebugger() {
+	ticker := time.NewTicker(1 * time.Second)
+	for range ticker.C {
+		cNonce, dNonce := DbgMuNonce.Report()
+		cNonceLockWait, dNonceLockWait := DbgMuNonceLockWait.Report()
+		cNonceFallback, dNonceFallback := DbgMuNonceFallback.Report()
+		cAdd, dAdd := DbgMuAdd.Report()
+		cReorg, dReorg := DbgMuReorg.Report()
+		cEvict, dEvict := DbgMuEvict.Report()
+		cJournal, dJournal := DbgMuJournal.Report()
+		cReannounce, dRennounce := DbgMuReannounce.Report()
+		cReport, dReport := DbgMuReport.Report()
+		cStats, dStats := DbgMuStats.Report()
+		cSetGasTip, dSetGasTip := DbgMuSetGasTips.Report()
+		cContent, dContent := DbgMuContent.Report()
+		cContentFrom, dContentFrom := DbgMuContentFrom.Report()
+
+		log.Info("txpool-debugger: mu of txpool reported", "cNonce", cNonce, "dNonce", dNonce, "cNonceLockWait", cNonceLockWait, "dNonceLockWait", dNonceLockWait, "cNonceFallback", cNonceFallback, "dNonceFallback", dNonceFallback, "cAdd", cAdd, "dAdd", dAdd, "cReorg", cReorg, "dReorg", dReorg, "cEvict", cEvict, "dEvict", dEvict, "cJournal", cJournal, "dJournal", dJournal, "cReannounce", cReannounce, "dRennounce", dRennounce, "cReport", cReport, "dReport", dReport, "cStats", cStats, "dStats", dStats, "cSetGasTip", cSetGasTip, "dSetGasTip", dSetGasTip, "cContent", cContent, "dContent", dContent, "cContentFrom", cContentFrom, "dContentFrom", dContentFrom)
+
+		cStateAccount, dStateAccount := state.DbgSnapAccount.Report()
+		cStateAccountCrypto, dStateAccountCrypot := state.DbgSnapAccountCrypto.Report()
+
+		log.Info("txpool-debugger: get nonce from statedb", "cStateAccount", cStateAccount, "dStateAccount", dStateAccount, "cStateAccountCrypto", cStateAccountCrypto, "dStateAccountCrypto", dStateAccountCrypot)
+
+		cDifflayerAccount, dDifflayerAccount := snapshot.DbgDiffAccount.Report()
+		cDifflayerAccountRLP, dDifflayerAccountRLP := snapshot.DbgDiffAccountRLP.Report()
+		cDifflayerAccountRLPWait, dDifflayerAccountRLPWait := snapshot.DbgDiffAccountRLPWait.Report()
+		cDifflayerAccountRLPBloom, dDifflayerAccountRLPBloom := snapshot.DbgDiffAccountRLPBloom.Report()
+		cDifflayerAccountRLPDisk, dDifflayerAccountRLPDisk := snapshot.DbgDiffAccountRLPDisk.Report()
+
+		cDisklayerAccount, dDisklayerAccount := snapshot.DbgDiskAccount.Report()
+		cDisklayerAccountRLP, dDisklayerAccountRLP := snapshot.DbgDiskAccountRLP.Report()
+		cDisklayerAccountRLPWait, dDisklayerAccountRLPWait := snapshot.DbgDiskAccountRLPWait.Report()
+		cDisklayerAccountRLPRawDB, dDisklayerAccountRLPRawDB := snapshot.DbgDiskAccountRLPRawDB.Report()
+
+		log.Info("txpool-debugger: difflayer ", "cDifflayerAccount", cDifflayerAccount, "dDifflayerAccount", dDifflayerAccount, "cDifflayerAccountRLP", cDifflayerAccountRLP, "dDifflayerAccountRLP", dDifflayerAccountRLP, "cDifflayerAccountRLPWait", cDifflayerAccountRLPWait, "dDifflayerAccountRLPWait", dDifflayerAccountRLPWait, "cDifflayerAccountRLPBloom", cDifflayerAccountRLPBloom, "dDifflayerAccountRLPBloom", dDifflayerAccountRLPBloom, "cDifflayerAccountRLPDisk", cDifflayerAccountRLPDisk, "dDifflayerAccountRLPDisk", dDifflayerAccountRLPDisk)
+		log.Info("txpool-debugger: disklayer", "cDisklayerAccount", cDisklayerAccount, "dDisklayerAccount", dDisklayerAccount, "cDisklayerAccountRLP", cDisklayerAccountRLP, "dDisklayerAccountRLP", dDisklayerAccountRLP, "cDisklayerAccountRLPWait", cDisklayerAccountRLPWait, "dDisklayerAccountRLPWait", dDisklayerAccountRLPWait, "cDisklayerAccountRLPRawDB", cDisklayerAccountRLPRawDB, "dDisklayerAccountRLPRawDB", dDisklayerAccountRLPRawDB)
+	}
 }
 
 // loop is the transaction pool's main event loop, waiting for and reacting to
@@ -472,6 +531,7 @@ func (pool *LegacyPool) loop() {
 			t0 := time.Now()
 			pending, queued := pool.stats()
 			loopReportTimer.UpdateSince(t0)
+			DbgMuReport.Mark(time.Since(t0), true)
 			pool.mu.RUnlock()
 			stales := 0
 
@@ -499,6 +559,7 @@ func (pool *LegacyPool) loop() {
 				}
 			}
 			evictMutexTimer.Update(time.Since(t0))
+			DbgMuEvict.Mark(time.Since(t0), true)
 			pool.mu.Unlock()
 
 		// Handle local transaction journal rotation
@@ -510,6 +571,7 @@ func (pool *LegacyPool) loop() {
 					log.Warn("Failed to rotate local tx journal", "err", err)
 				}
 				journalMutexTimer.UpdateSince(t0)
+				DbgMuJournal.Mark(time.Since(t0), true)
 				pool.mu.Unlock()
 			}
 
@@ -537,6 +599,7 @@ func (pool *LegacyPool) loop() {
 				return txs
 			}()
 			reannMutexTimer.UpdateSince(t0)
+			DbgMuReannounce.Mark(time.Since(t0), true)
 			pool.mu.RUnlock()
 			staledMeter.Mark(int64(len(reannoTxs)))
 			if len(reannoTxs) > 0 {
@@ -587,6 +650,9 @@ func (pool *LegacyPool) SubscribeReannoTxsEvent(ch chan<- core.ReannoTxsEvent) e
 func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer func(t0 time.Time) {
+		DbgMuSetGasTips.Mark(time.Since(t0), true)
+	}(time.Now())
 
 	var (
 		newTip = uint256.MustFromBig(tip)
@@ -612,6 +678,7 @@ func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 	defer pool.mu.RUnlock()
 	defer func(t0 time.Time) {
 		nonceMutexTimer.UpdateSince(t0)
+		DbgMuNonce.Mark(time.Since(t0), true)
 	}(time.Now())
 
 	return pool.pendingNonces.get(addr)
@@ -622,6 +689,9 @@ func (pool *LegacyPool) Nonce(addr common.Address) uint64 {
 func (pool *LegacyPool) Stats() (int, int) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer func(t0 time.Time) {
+		DbgMuStats.Mark(time.Since(t0), true)
+	}(time.Now())
 
 	return pool.stats()
 }
@@ -645,6 +715,9 @@ func (pool *LegacyPool) stats() (int, int) {
 func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[common.Address][]*types.Transaction) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
+	defer func(t0 time.Time) {
+		DbgMuContent.Mark(time.Since(t0), true)
+	}(time.Now())
 
 	pending := make(map[common.Address][]*types.Transaction, len(pool.pending))
 	for addr, list := range pool.pending {
@@ -662,6 +735,9 @@ func (pool *LegacyPool) Content() (map[common.Address][]*types.Transaction, map[
 func (pool *LegacyPool) ContentFrom(addr common.Address) ([]*types.Transaction, []*types.Transaction) {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
+	defer func(t0 time.Time) {
+		DbgMuContentFrom.Mark(time.Since(t0), true)
+	}(time.Now())
 
 	var pending []*types.Transaction
 	if list, ok := pool.pending[addr]; ok {
@@ -1265,6 +1341,7 @@ func (pool *LegacyPool) Add(txs []*types.Transaction, local, sync bool) []error 
 	addWaitLockTimer.Update(time.Since(tm) / time.Duration(len(news)))
 	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
 	addWithLockTimer.Update(time.Since(t0) / time.Duration(len(news)))
+	DbgMuAdd.Mark(time.Since(t0), true)
 	pool.mu.Unlock()
 
 	t0 = time.Now()
@@ -1531,6 +1608,7 @@ func (pool *LegacyPool) runReorg(done chan struct{}, reset *txpoolResetRequest, 
 	var oldBlock, newBlock uint64 = 0, 0
 	pool.accountReadCounter, pool.accountReadDur = 0, 0
 	defer func(t0 time.Time) {
+		DbgMuReorg.Mark(time.Since(t0), true)
 		reorgCost = time.Since(t0)
 		if reset != nil {
 			resetCount.Inc(1)
@@ -1791,6 +1869,7 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) (demoteAddrs []com
 		log.Error("Failed to reset txpool state", "err", err)
 		return
 	}
+	statedb.Debug = true
 	pool.currentHead.Store(newHead)
 	pool.currentState = statedb
 	pool.pendingNonces = newNoncer(statedb)
