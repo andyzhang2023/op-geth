@@ -10,10 +10,10 @@ type Debugger struct {
 	latency int64
 }
 
-func (d *Debugger) Report() (int32, int64) {
+func (d *Debugger) Report() (int32, time.Duration) {
 	cnt := atomic.SwapInt32(&d.count, 0)
 	dur := atomic.SwapInt64(&d.latency, 0)
-	return cnt, dur
+	return cnt, time.Duration(dur)
 }
 
 func (d *Debugger) Mark(latency time.Duration, debug bool) {

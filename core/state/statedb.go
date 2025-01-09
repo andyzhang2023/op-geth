@@ -52,6 +52,7 @@ type revision struct {
 }
 
 var (
+	DbgStateObjects      *snapshot.Debugger = &snapshot.Debugger{}
 	DbgSnapAccount       *snapshot.Debugger = &snapshot.Debugger{}
 	DbgSnapAccountCrypto *snapshot.Debugger = &snapshot.Debugger{}
 )
@@ -629,6 +630,10 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 // flag set. This is needed by the state journal to revert to the correct s-
 // destructed object instead of wiping all knowledge about the state object.
 func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
+	defer func(t0 time.Time) {
+		DbgStateObjects.Mark(time.Since(t0), s.Debug)
+	}(time.Now())
+
 	// Prefer live objects if any is available
 	if obj := s.stateObjects[addr]; obj != nil {
 		return obj
@@ -639,7 +644,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		start := time.Now()
 		hash := crypto.HashData(s.hasher, addr.Bytes())
 		DbgSnapAccountCrypto.Mark(time.Since(start), s.Debug)
+		t0 := time.Now()
 		acc, err := s.snap.Account(hash, s.Debug)
+		DbgSnapAccount.Mark(time.Since(t0), s.Debug)
 		if metrics.EnabledExpensive {
 			s.SnapshotAccountReads += time.Since(start)
 		}
@@ -760,6 +767,7 @@ func (s *StateDB) CreateAccount(addr common.Address) {
 func (s *StateDB) Copy() *StateDB {
 	// Copy all the basic fields, initialize the memory ones
 	state := &StateDB{
+		Debug:                s.Debug,
 		db:                   s.db,
 		trie:                 s.db.CopyTrie(s.trie),
 		originalRoot:         s.originalRoot,

@@ -35,10 +35,12 @@ type noncer struct {
 
 // newNoncer creates a new virtual state database to track the pool nonces.
 func newNoncer(statedb *state.StateDB) *noncer {
-	return &noncer{
+	noncer := &noncer{
 		fallback: statedb.Copy(),
 		nonces:   make(map[common.Address]uint64),
 	}
+	noncer.fallback.Debug = true
+	return noncer
 }
 
 // get returns the current nonce of an account, falling back to a real state

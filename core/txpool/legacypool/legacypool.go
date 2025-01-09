@@ -478,8 +478,9 @@ func (pool *LegacyPool) loopOfDebugger() {
 
 		cStateAccount, dStateAccount := state.DbgSnapAccount.Report()
 		cStateAccountCrypto, dStateAccountCrypot := state.DbgSnapAccountCrypto.Report()
+		cStateObjects, dStateObjects := state.DbgStateObjects.Report()
 
-		log.Info("txpool-debugger: get nonce from statedb", "cStateAccount", cStateAccount, "dStateAccount", dStateAccount, "cStateAccountCrypto", cStateAccountCrypto, "dStateAccountCrypto", dStateAccountCrypot)
+		log.Info("txpool-debugger: get nonce from statedb", "cStateAccount", cStateAccount, "dStateAccount", dStateAccount, "cStateAccountCrypto", cStateAccountCrypto, "dStateAccountCrypto", dStateAccountCrypot, "cStateObjects", cStateObjects, "dStateObjects", dStateObjects)
 
 		cDifflayerAccount, dDifflayerAccount := snapshot.DbgDiffAccount.Report()
 		cDifflayerAccountRLP, dDifflayerAccountRLP := snapshot.DbgDiffAccountRLP.Report()
