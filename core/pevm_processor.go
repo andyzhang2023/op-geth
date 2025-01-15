@@ -265,7 +265,6 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb state.StateDBer, cfg
 	// parallel execution
 	start := time.Now()
 	txLevels := NewTxLevels(p.allTxReqs, txDAG)
-	log.Debug("txLevels size", "txLevels size", len(txLevels))
 	parallelTxLevelsSizeMeter.Update(int64(len(txLevels)))
 	buildLevelsDuration := time.Since(start)
 
@@ -320,6 +319,7 @@ func (p *PEVMProcessor) Process(block *types.Block, statedb state.StateDBer, cfg
 		"len(commonTxs)", len(p.commonTxs),
 		"conflictNum", p.debugConflictRedoNum,
 		"redoRate(%)", redoRate,
+		"txLevels", len(txLevels),
 		"txDAG", txDAG != nil)
 	if metrics.EnabledExpensive {
 		parallelTxNumMeter.Mark(int64(len(p.commonTxs)))
