@@ -123,7 +123,6 @@ var (
 		utils.CacheSnapshotFlag,
 		utils.CacheNoPrefetchFlag,
 		utils.CachePreimagesFlag,
-		utils.MultiDataBaseFlag,
 		utils.AllowInsecureNoTriesFlag,
 		utils.CacheLogSizeFlag,
 		utils.FDLimitFlag,

@@ -85,7 +85,7 @@ func inspectFreezers(db ethdb.Database) ([]freezerInfo, error) {
 	for _, freezer := range freezers {
 		switch freezer {
 		case ChainFreezerName:
-			info, err := inspect(ChainFreezerName, chainFreezerNoSnappy, db.BlockStore())
+			info, err := inspect(ChainFreezerName, chainFreezerNoSnappy, db)
 			if err != nil {
 				return nil, err
 			}
@@ -95,7 +95,7 @@ func inspectFreezers(db ethdb.Database) ([]freezerInfo, error) {
 			if ReadStateScheme(db) != PathScheme {
 				continue
 			}
-			datadir, err := db.StateStore().AncientDatadir()
+			datadir, err := db.AncientDatadir()
 			if err != nil {
 				return nil, err
 			}
@@ -121,8 +121,7 @@ func inspectFreezers(db ethdb.Database) ([]freezerInfo, error) {
 			}
 			f, err := NewProofFreezer(datadir, true)
 			if err != nil {
-				log.Warn("If proof keeper is not enabled, there will be no ProofFreezer.")
-				return nil, nil
+				return nil, err
 			}
 			defer f.Close()
 
@@ -143,25 +142,16 @@ func inspectFreezers(db ethdb.Database) ([]freezerInfo, error) {
 // ancient indicates the path of root ancient directory where the chain freezer can
 // be opened. Start and end specify the range for dumping out indexes.
 // Note this function can only be used for debugging purposes.
-func InspectFreezerTable(ancient string, freezerName string, tableName string, start, end int64, multiDatabase bool) error {
+func InspectFreezerTable(ancient string, freezerName string, tableName string, start, end int64) error {
 	var (
 		path   string
 		tables map[string]bool
 	)
 	switch freezerName {
 	case ChainFreezerName:
-		if multiDatabase {
-			path, tables = resolveChainFreezerDir(filepath.Dir(ancient)+"/block/ancient"), chainFreezerNoSnappy
-		} else {
-			path, tables = resolveChainFreezerDir(ancient), chainFreezerNoSnappy
-		}
-
+		path, tables = resolveChainFreezerDir(ancient), chainFreezerNoSnappy
 	case StateFreezerName:
-		if multiDatabase {
-			path, tables = filepath.Join(filepath.Dir(ancient)+"/state/ancient", freezerName), stateFreezerNoSnappy
-		} else {
-			path, tables = filepath.Join(ancient, freezerName), stateFreezerNoSnappy
-		}
+		path, tables = filepath.Join(ancient, freezerName), stateFreezerNoSnappy
 	default:
 		return fmt.Errorf("unknown freezer, supported ones: %v", freezers)
 	}
