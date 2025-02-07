@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -517,7 +518,9 @@ func (t *Tree) cap(diff *diffLayer, layers int) *diskLayer {
 	bottom := diff.parent.(*diffLayer)
 
 	bottom.lock.RLock()
+	start := time.Now()
 	base := diffToDisk(bottom)
+	log.Info("perf-db-trace snapshot cap diffToDisk", "duration", time.Since(start))
 	bottom.lock.RUnlock()
 
 	t.layers[base.root] = base

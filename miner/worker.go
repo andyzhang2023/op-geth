@@ -925,6 +925,14 @@ func (w *worker) commitTransactions(env *environment, plainTxs, blobTxs *transac
 	}
 	var coalescedLogs []*types.Log
 
+	start := time.Now()
+	nonceTooLowTxCount := 0
+	commitTxTimer := time.Duration(0)
+	shiftTxTimer := time.Duration(0)
+	defer func() {
+		log.Info("perf-trace commitTransactions", "duration", time.Since(start), "number", env.header.Number.Uint64(), "commitTx", commitTxTimer, "shiftTx", shiftTxTimer, "validateTx", env.tcount, "nonceTooLowTx", nonceTooLowTxCount)
+	}()
+
 	for {
 		// Check interruption signal and abort building if it's fired.
 		if interrupt != nil {
@@ -965,6 +973,7 @@ func (w *worker) commitTransactions(env *environment, plainTxs, blobTxs *transac
 			}
 		}
 		if ltx == nil {
+			log.Info("perf-trace commitTransactions txpoolEmpty", "number", env.header.Number.Uint64(), "count", env.tcount)
 			break
 		}
 		txTotalMeter.Mark(1)
@@ -1004,19 +1013,26 @@ func (w *worker) commitTransactions(env *environment, plainTxs, blobTxs *transac
 		// Start executing the transaction
 		env.state.SetTxContext(tx.Hash(), env.tcount)
 
+		start := time.Now()
 		logs, err := w.commitTransaction(env, tx)
+		commitTxTimer += time.Since(start)
 		switch {
 		case errors.Is(err, core.ErrNonceTooLow):
 			// New head notification data race between the transaction pool and miner, shift
 			log.Trace("Skipping transaction with low nonce", "hash", ltx.Hash, "sender", from, "nonce", tx.Nonce())
+			start := time.Now()
 			txs.Shift()
+			shiftTxTimer += time.Since(start)
 			txErrNoncetoolowMeter.Mark(1)
+			nonceTooLowTxCount++
 
 		case errors.Is(err, nil):
 			// Everything ok, collect the logs and shift in the next transaction from the same account
 			coalescedLogs = append(coalescedLogs, logs...)
 			env.tcount++
+			start := time.Now()
 			txs.Shift()
+			shiftTxTimer += time.Since(start)
 			txSuccMeter.Mark(1)
 
 		default:
@@ -1296,7 +1312,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	pendingBlobTxs := w.eth.TxPool().Pending(filter)
 
 	packFromTxpoolTimer.UpdateSince(start)
-	log.Debug("packFromTxpoolTimer", "duration", common.PrettyDuration(time.Since(start)), "hash", env.header.Hash(), "txs", len(pendingPlainTxs))
+	log.Info("perf-trace fillTransactions packFromPool", "duration", common.PrettyDuration(time.Since(start)), "number", env.header.Number.Uint64(), "txs", len(pendingPlainTxs))
 
 	// Split the pending transactions into locals and remotes.
 	localPlainTxs, remotePlainTxs := make(map[common.Address][]*txpool.LazyTransaction), pendingPlainTxs
@@ -1326,7 +1342,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	if len(remotePlainTxs) > 0 || len(remoteBlobTxs) > 0 {
 		plainTxs := newTransactionsByPriceAndNonce(env.signer, remotePlainTxs, env.header.BaseFee)
 		blobTxs := newTransactionsByPriceAndNonce(env.signer, remoteBlobTxs, env.header.BaseFee)
-
+		log.Info("perf-trace fillTransactions newTransactionsByPriceAndNonce", "duration", common.PrettyDuration(time.Since(start)), "number", env.header.Number.Uint64())
 		if err := w.commitTransactions(env, plainTxs, blobTxs, interrupt); err != nil {
 			return err
 		}
@@ -1360,9 +1376,37 @@ func (w *worker) estimateGasForTxDAG(env *environment) uint64 {
 // generateWork generates a sealing block based on the given parameters.
 func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 	// TODO delete after debug performance metrics
-	core.DebugInnerExecutionDuration = 0
+	core.PerfTraceEvmExecutionDuration = 0
+	core.PerfTraceTxToMsgDuration = 0
+	core.PerfTraceApplyMsgDuration = 0
+	core.PerfTraceFnaliseDuration = 0
+	core.PerfTraceNewEvmDuration = 0
+	core.PerfTraceSetReceiptsDuration = 0
+	core.PerfTracePrecheckDuration = 0
+	core.PerfTracePrepareDuration = 0
+	core.PerfTraceCollectFeeDuration = 0
+	core.PerfTraceApplyTransactionDuration = 0
+	core.PerfTraceApplyTransactionInsideDuration = 0
+	core.PerfTraceTDBInsideDuration = 0
+	core.PerfTraceInnerTDBDuration = 0
+	core.PerfTraceApplyTransactionOutsideDuration = 0
+	core.PerfTraceTDBOutsideDuration = 0
 	defer func() {
-		core.DebugInnerExecutionDuration = 0
+		core.PerfTraceEvmExecutionDuration = 0
+		core.PerfTraceTxToMsgDuration = 0
+		core.PerfTraceApplyMsgDuration = 0
+		core.PerfTraceFnaliseDuration = 0
+		core.PerfTraceNewEvmDuration = 0
+		core.PerfTraceSetReceiptsDuration = 0
+		core.PerfTracePrecheckDuration = 0
+		core.PerfTracePrepareDuration = 0
+		core.PerfTraceCollectFeeDuration = 0
+		core.PerfTraceApplyTransactionDuration = 0
+		core.PerfTraceApplyTransactionInsideDuration = 0
+		core.PerfTraceTDBInsideDuration = 0
+		core.PerfTraceInnerTDBDuration = 0
+		core.PerfTraceApplyTransactionOutsideDuration = 0
+		core.PerfTraceTDBOutsideDuration = 0
 	}()
 
 	work, err := w.prepareWork(genParams)
@@ -1449,7 +1493,9 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 			if w.chain.TxDAGEnabledWhenMine() {
 				work.state.MVStates().EnableAsyncGen()
 			}
+			start := time.Now()
 			err := w.fillTransactions(interrupt, work)
+			log.Info("perf-trace generateWork fillTransactions", "duration", common.PrettyDuration(time.Since(start)), "parentHash", genParams.parentHash)
 			timer.Stop() // don't need timeout interruption any more
 			if errors.Is(err, errBlockInterruptedByTimeout) {
 				log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout), "parentHash", genParams.parentHash)
@@ -1469,8 +1515,11 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 		return &newPayloadResult{err: errInterruptedUpdate}
 	}
 
+	log.Info("perf-trace generateWork exec details", "parent", genParams.parentHash, "evmExec", core.PerfTraceEvmExecutionDuration, "applyMsg", core.PerfTraceApplyMsgDuration, "setReceipts", core.PerfTraceSetReceiptsDuration, "collectFee", core.PerfTraceCollectFeeDuration, "finalise", core.PerfTraceFnaliseDuration, "newEvm", core.PerfTraceNewEvmDuration, "precheck", core.PerfTracePrecheckDuration, "prepare", core.PerfTracePrepareDuration, "txToMsg", core.PerfTraceTxToMsgDuration, "applyTx", core.PerfTraceApplyTransactionDuration, "applyTxOutside", core.PerfTraceApplyTransactionOutsideDuration, "applyTxInside", core.PerfTraceApplyTransactionInsideDuration, "tdbInside", core.PerfTraceTDBInsideDuration, "tdbOutside", core.PerfTraceTDBOutsideDuration, "innerTDB", core.PerfTraceInnerTDBDuration)
+
 	start = time.Now()
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, nil, work.receipts, genParams.withdrawals)
+	log.Info("perf-trace generateWork FinalizeAndAssemble", "duration", common.PrettyDuration(time.Since(start)), "parentHash", genParams.parentHash)
 	if err != nil {
 		return &newPayloadResult{err: err}
 	}
@@ -1491,9 +1540,9 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 	storageHashTimer.Update(work.state.StorageHashes)                // Storage hashes are complete(in FinalizeAndAssemble)
 	txDAGGenerateTimer.Update(work.state.TxDAGGenerate)
 
-	innerExecutionTimer.Update(core.DebugInnerExecutionDuration)
+	innerExecutionTimer.Update(core.PerfTraceEvmExecutionDuration)
 
-	log.Debug("build payload statedb metrics", "parentHash", genParams.parentHash, "accountReads", common.PrettyDuration(work.state.AccountReads), "storageReads", common.PrettyDuration(work.state.StorageReads), "snapshotAccountReads", common.PrettyDuration(work.state.SnapshotAccountReads), "snapshotStorageReads", common.PrettyDuration(work.state.SnapshotStorageReads), "accountUpdates", common.PrettyDuration(work.state.AccountUpdates), "storageUpdates", common.PrettyDuration(work.state.StorageUpdates), "accountHashes", common.PrettyDuration(work.state.AccountHashes), "storageHashes", common.PrettyDuration(work.state.StorageHashes))
+	log.Info("perf-trace generateWork db details", "parentHash", genParams.parentHash, "accountReads", common.PrettyDuration(work.state.AccountReads), "storageReads", common.PrettyDuration(work.state.StorageReads), "snapshotAccountReads", common.PrettyDuration(work.state.SnapshotAccountReads), "snapshotStorageReads", common.PrettyDuration(work.state.SnapshotStorageReads), "accountUpdates", common.PrettyDuration(work.state.AccountUpdates), "storageUpdates", common.PrettyDuration(work.state.StorageUpdates), "accountHashes", common.PrettyDuration(work.state.AccountHashes), "storageHashes", common.PrettyDuration(work.state.StorageHashes), "updateStoragesRoot", work.state.UpdateStoragesRootTimer, "updateAccountRoot", work.state.UpdateAccountRootTimer)
 	return &newPayloadResult{
 		block:    block,
 		fees:     totalFees(block, work.receipts),

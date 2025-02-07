@@ -154,7 +154,7 @@ func (payload *Payload) update(r *newPayloadResult, elapsed time.Duration, postF
 		payload.sidecars = r.sidecars
 
 		feesInEther := new(big.Float).Quo(new(big.Float).SetInt(r.fees), big.NewFloat(params.Ether))
-		log.Info("Updated payload",
+		log.Info("perf-trace Updated payload",
 			"id", payload.id,
 			"number", r.block.NumberU64(),
 			"hash", r.block.Hash(),
@@ -222,7 +222,7 @@ func (payload *Payload) resolve(onlyFull bool) *engine.ExecutionPayloadEnvelope 
 		start := time.Now()
 		payload.cond.Wait()
 		waitPayloadTimer.UpdateSince(start)
-		log.Debug("waitPayloadTimer", "duration", common.PrettyDuration(time.Since(start)), "id", payload.id)
+		log.Info("perf-trace resolve waitPayload", "duration", common.PrettyDuration(time.Since(start)), "id", payload.id)
 	}
 
 	// Now we can signal the building routine to stop.

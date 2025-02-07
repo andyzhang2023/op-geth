@@ -144,6 +144,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 }
 
 func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+	start0 := time.Now()
+	defer func () {
+		PerfTraceApplyTransactionInsideDuration += time.Since(start0)
+	}()
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, statedb)
@@ -156,7 +160,9 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	}
 
 	// Apply the transaction to the current state (included in the env).
+	start1 := time.Now()
 	result, err := ApplyMessage(evm, msg, gp)
+	PerfTraceApplyMsgDuration += time.Since(start1)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +170,9 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	// Update the state with pending changes.
 	var root []byte
 	if config.IsByzantium(blockNumber) {
+		start := time.Now()
 		statedb.Finalise(true)
+		PerfTraceFnaliseDuration += time.Since(start)
 	} else {
 		root = statedb.IntermediateRoot(config.IsEIP158(blockNumber)).Bytes()
 	}
@@ -172,6 +180,7 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 
 	// Create a new receipt for the transaction, storing the intermediate root and gas used
 	// by the tx.
+	start2 := time.Now()
 	receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: *usedGas}
 	if result.Failed() {
 		receipt.Status = types.ReceiptStatusFailed
@@ -208,6 +217,7 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	receipt.BlockHash = blockHash
 	receipt.BlockNumber = blockNumber
 	receipt.TransactionIndex = uint(statedb.TxIndex())
+	PerfTraceSetReceiptsDuration += time.Since(start2)
 	return receipt, err
 }
 
@@ -216,15 +226,25 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 // for the transaction, gas used and an error if the transaction failed,
 // indicating the block was invalid.
 func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, error) {
+	start0 := time.Now()
+	defer func () {
+		PerfTraceApplyTransactionDuration += time.Since(start0)
+	}()
 	msg, err := TransactionToMessage(tx, types.MakeSigner(config, header.Number, header.Time), header.BaseFee)
+	PerfTraceTxToMsgDuration += time.Since(start0)
 	if err != nil {
 		return nil, err
 	}
 	// Create a new context to be used in the EVM environment
+	start1 := time.Now()
 	blockContext := NewEVMBlockContext(header, bc, author, config, statedb)
 	txContext := NewEVMTxContext(msg)
 	vmenv := vm.NewEVM(blockContext, txContext, statedb, config, cfg)
-	return applyTransaction(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
+	PerfTraceNewEvmDuration += time.Since(start1)
+	start2 := time.Now()
+	ret, err := applyTransaction(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
+	PerfTraceApplyTransactionOutsideDuration += time.Since(start2)
+	return ret, err
 }
 
 // ProcessBeaconBlockRoot applies the EIP-4788 system call to the beacon block root

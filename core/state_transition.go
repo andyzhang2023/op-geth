@@ -32,7 +32,21 @@ import (
 )
 
 // TODO delete after debug performance metrics
-var DebugInnerExecutionDuration time.Duration
+var PerfTraceEvmExecutionDuration time.Duration
+var PerfTraceTxToMsgDuration time.Duration
+var PerfTraceApplyMsgDuration time.Duration
+var PerfTraceApplyTransactionInsideDuration time.Duration
+var PerfTraceApplyTransactionOutsideDuration time.Duration
+var PerfTraceApplyTransactionDuration time.Duration
+var PerfTraceFnaliseDuration time.Duration
+var PerfTraceNewEvmDuration time.Duration
+var PerfTraceSetReceiptsDuration time.Duration
+var PerfTracePrecheckDuration time.Duration
+var PerfTracePrepareDuration time.Duration
+var PerfTraceCollectFeeDuration time.Duration
+var PerfTraceTDBInsideDuration time.Duration
+var PerfTraceInnerTDBDuration time.Duration
+var PerfTraceTDBOutsideDuration time.Duration
 
 // ExecutionResult includes all output after executing given evm
 // message no matter the execution itself is successful or not.
@@ -408,6 +422,10 @@ func (st *StateTransition) preCheck() error {
 // However if any consensus issue encountered, return the error directly with
 // nil evm execution result.
 func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
+	start := time.Now()
+	defer func () {
+		PerfTraceTDBInsideDuration += time.Since(start)
+	}()
 	if mint := st.msg.Mint; mint != nil {
 		mintU256, overflow := uint256.FromBig(mint)
 		if overflow {
@@ -418,6 +436,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	snap := st.state.Snapshot()
 
 	result, err := st.innerTransitionDb()
+	PerfTraceTDBOutsideDuration += time.Since(start)
 	// Failed deposits must still be included. Unless we cannot produce the block at all due to the gas limit.
 	// On deposit failure, we rewind any state changes from after the minting, and increment the nonce.
 	if err != nil && err != ErrGasLimitReached && st.msg.IsDepositTx {
@@ -443,6 +462,10 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 }
 
 func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
+	start0 := time.Now()
+	defer func () {
+		PerfTraceInnerTDBDuration += time.Since(start0)
+	}()
 	// First check this message satisfies all consensus rules before
 	// applying the message. The rules include these clauses
 	//
@@ -455,8 +478,10 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 
 	// Check clauses 1-3, buy gas if everything is correct
 	if err := st.preCheck(); err != nil {
+		PerfTracePrecheckDuration += time.Since(start0)
 		return nil, err
 	}
+	PerfTracePrecheckDuration += time.Since(start0)
 
 	if tracer := st.evm.Config.Tracer; tracer != nil {
 		tracer.CaptureTxStart(st.initialGas)
@@ -503,13 +528,15 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 	// Execute the preparatory steps for state transition which includes:
 	// - prepare accessList(post-berlin)
 	// - reset transient storage(eip 1153)
+	start1 := time.Now()
 	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
+	PerfTracePrepareDuration += time.Since(start1)
 
 	var (
 		ret   []byte
 		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
 	)
-	start := time.Now()
+	start2 := time.Now()
 	if contractCreation {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(sender, msg.Data, st.gasRemaining, value)
 	} else {
@@ -517,7 +544,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, value)
 	}
-	DebugInnerExecutionDuration += time.Since(start)
+	PerfTraceEvmExecutionDuration += time.Since(start2)
 
 	// if deposit: skip refunds, skip tipping coinbase
 	// Regolith changes this behaviour to report the actual gasUsed instead of always reporting all gas used.
@@ -538,6 +565,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 	// Note for deposit tx there is no ETH refunded for unused gas, but that's taken care of by the fact that gasPrice
 	// is always 0 for deposit tx. So calling refundGas will ensure the gasUsed accounting is correct without actually
 	// changing the sender's balance
+	start3 := time.Now()
 	var gasRefund uint64
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
@@ -594,7 +622,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			st.state.AddBalance(params.OptimismL1FeeRecipient, amtU256)
 		}
 	}
-
+	PerfTraceCollectFeeDuration += time.Since(start3)
 	return &ExecutionResult{
 		UsedGas:     st.gasUsed(),
 		RefundedGas: gasRefund,

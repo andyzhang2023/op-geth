@@ -135,21 +135,23 @@ type StateDB struct {
 	nextRevisionId int
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReads         time.Duration
-	AccountHashes        time.Duration
-	AccountUpdates       time.Duration
-	AccountCommits       time.Duration
-	StorageReads         time.Duration
-	StorageHashes        time.Duration
-	StorageUpdates       time.Duration
-	StorageCommits       time.Duration
-	SnapshotAccountReads time.Duration
-	SnapshotStorageReads time.Duration
-	SnapshotCommits      time.Duration
-	TrieDBCommits        time.Duration
-	TrieCommits          time.Duration
-	CodeCommits          time.Duration
-	TxDAGGenerate        time.Duration
+	AccountReads            time.Duration
+	AccountHashes           time.Duration
+	AccountUpdates          time.Duration
+	AccountCommits          time.Duration
+	StorageReads            time.Duration
+	StorageHashes           time.Duration
+	StorageUpdates          time.Duration
+	StorageCommits          time.Duration
+	SnapshotAccountReads    time.Duration
+	SnapshotStorageReads    time.Duration
+	SnapshotCommits         time.Duration
+	TrieDBCommits           time.Duration
+	TrieCommits             time.Duration
+	CodeCommits             time.Duration
+	TxDAGGenerate           time.Duration
+	UpdateStoragesRootTimer time.Duration
+	UpdateAccountRootTimer  time.Duration
 
 	AccountUpdated int
 	StorageUpdated int
@@ -1006,8 +1008,13 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
+	start := time.Now()
 	s.AccountsIntermediateRoot()
-	return s.StateIntermediateRoot()
+	s.UpdateStoragesRootTimer += time.Since(start)
+	start = time.Now()
+	root := s.StateIntermediateRoot()
+	s.UpdateAccountRootTimer += time.Since(start)
+	return root
 }
 
 func (s *StateDB) AccountsIntermediateRoot() {
@@ -1351,6 +1358,7 @@ func (s *StateDB) handleDestruction(nodes *trienode.MergedNodeSet) (map[common.A
 // The associated block number of the state transition is also provided
 // for more chain context.
 func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, error) {
+	trace0 := time.Now()
 	// Short circuit in case any database failure occurred earlier.
 	if s.dbErr != nil {
 		s.StopPrefetcher()
@@ -1375,6 +1383,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) {
+			// s.AccountCommits += time.Since(start)
 			accountUpdatedMeter.Mark(int64(s.AccountUpdated))
 			storageUpdatedMeter.Mark(int64(s.StorageUpdated))
 			accountDeletedMeter.Mark(int64(s.AccountDeleted))
@@ -1406,6 +1415,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 				return err
 			}
 
+			storageCommitStart := time.Now()
 			tasks := make(chan func())
 			type taskResult struct {
 				err     error
@@ -1467,6 +1477,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 				}
 			}
 			close(finishCh)
+			log.Info("perf-trace Commit storageCommit", "duration", time.Since(storageCommitStart), "block", block)
 
 			if !s.noTrie {
 				var start time.Time
@@ -1486,6 +1497,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 				}
 				if metrics.EnabledExpensive {
 					s.AccountCommits += time.Since(start)
+					log.Info("perf-trace commit accountCommit", "duration", time.Since(start), "block", block)
 				}
 
 				origin := s.originalRoot
@@ -1558,15 +1570,18 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 					// - head-1 layer is paired with HEAD-1 state
 					// - head-(n-1) layer(bottom-most diff layer) is paired with HEAD-(n-1)state
 					go func() {
+						start := time.Now()
 						if err := s.snaps.Cap(s.expectedRoot, 128); err != nil {
 							log.Warn("Failed to cap snapshot tree", "root", s.expectedRoot, "layers", 128, "err", err)
 						}
+						log.Info("perf-db-trace async commit Snapshot cap", "duration", time.Since(start), "block", block)
 					}()
 				}
 			}
 			return nil
 		},
 	}
+	log.Info("perf-trace Commit debug0", "duration", time.Since(trace0), "block", block)
 	defer s.StopPrefetcher()
 	commitRes := make(chan error, len(commitFuncs))
 	for _, f := range commitFuncs {
@@ -1582,6 +1597,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 			return common.Hash{}, r
 		}
 	}
+	log.Info("perf-trace Commit debug1", "duration", time.Since(trace0), "block", block)
 
 	root := s.stateRoot
 	s.snap = nil
@@ -1595,6 +1611,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 	s.storagesOrigin = make(map[common.Address]map[common.Hash][]byte)
 	s.stateObjectsDirty = make(map[common.Address]struct{})
 	s.stateObjectsDestruct = make(map[common.Address]*types.StateAccount)
+	log.Info("perf-trace Commit debug2", "duration", time.Since(trace0), "block", block)
 	return root, nil
 }
 

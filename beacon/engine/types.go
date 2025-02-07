@@ -19,10 +19,12 @@ package engine
 import (
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -225,7 +227,9 @@ func decodeTransactions(enc [][]byte) ([]*types.Transaction, error) {
 // Withdrawals value will propagate through the returned block. Empty
 // Withdrawals value must be passed via non-nil, length 0 value in params.
 func ExecutableDataToBlock(params ExecutableData, versionedHashes []common.Hash, beaconRoot *common.Hash) (*types.Block, error) {
+	start := time.Now()
 	txs, err := decodeTransactions(params.Transactions)
+	log.Info("perf-trace ExecutableDataToBlock decodeTransactions", "duration", time.Since(start), "number", params.Number, "len", len(txs))
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +258,7 @@ func ExecutableDataToBlock(params ExecutableData, versionedHashes []common.Hash,
 	// Only set withdrawalsRoot if it is non-nil. This allows CLs to use
 	// ExecutableData before withdrawals are enabled by marshaling
 	// Withdrawals as the json null value.
+	start = time.Now()
 	var withdrawalsRoot *common.Hash
 	if params.Withdrawals != nil {
 		h := types.DeriveSha(types.Withdrawals(params.Withdrawals), trie.NewStackTrie(nil))
@@ -280,6 +285,7 @@ func ExecutableDataToBlock(params ExecutableData, versionedHashes []common.Hash,
 		BlobGasUsed:      params.BlobGasUsed,
 		ParentBeaconRoot: beaconRoot,
 	}
+	log.Info("perf-trace ExecutableDataToBlock DeriveSha", "duration", time.Since(start), "hash", params.BlockHash, "number", params.Number, "len", len(txs))
 	block := types.NewBlockWithHeader(header).WithBody(txs, nil /* uncles */).WithWithdrawals(params.Withdrawals)
 	if block.Hash() != params.BlockHash {
 		return nil, fmt.Errorf("blockhash mismatch, want %x, got %x", params.BlockHash, block.Hash())
