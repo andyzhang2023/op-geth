@@ -401,7 +401,8 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 	// Finalize and assemble the block.
 	beacon.Finalize(chain, header, state, txs, uncles, withdrawals)
 
-<<<<<<< HEAD
+	// Assign the final state root to header.
+	start := time.Now()
 	rootCh := make(chan common.Hash)
 	go func() {
 		rootCh <- state.IntermediateRoot(true)
@@ -410,12 +411,7 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 	block := types.NewBlockWithWithdrawals(header, txs, uncles, receipts, withdrawals, trie.NewStackTrie(nil))
 	headerWithRoot := block.Header()
 	headerWithRoot.Root = <-rootCh
-=======
-	// Assign the final state root to header.
-	start := time.Now()
-	header.Root = state.IntermediateRoot(true)
 	log.Info("perf-trace FinalizeAndAssemble IntermediateRoot", "duration", time.Since(start), "number", header.Number.Uint64())
->>>>>>> nolan/opbnb-develop-tracing
 
 	// Assemble and return the final block.
 	return block.WithSeal(headerWithRoot), nil
